@@ -1,0 +1,28 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{kt,kts}]
+max_line_length = 220
+ij_kotlin_allow_trailing_comma = true
+ij_kotlin_allow_trailing_comma_on_call_site = true
+ij_kotlin_imports_layout = *,java.**,javax.**,kotlin.**,^
+ij_kotlin_name_count_to_use_star_import = 99
+ij_kotlin_name_count_to_use_star_import_for_members = 99
+ij_kotlin_use_backticks = false
+ij_kotlin_continuation_indent_size = 4
+ktlint_function_naming_ignore_when_annotated_with = Composable,Preview
+
+[**/build/generated/**]
+ktlint_standard_import-ordering = disabled
+ktlint_standard_indent = disabled
+ktlint_standard_class-naming = disabled
+ktlint_standard_function-naming = disabled
+ktlint_standard_wrapping = disabled
+ktlint_standard_multiline-expression-wrapping = disabled

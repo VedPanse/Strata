@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Bigger insets -> smaller logo. Start with 24dp; bump up/down to taste. -->
+    <item android:left="24dp" android:top="24dp"
+            android:right="24dp" android:bottom="24dp">
+        <bitmap
+                android:src="@drawable/strata_logo"
+                android:gravity="center"/>
+    </item>
+</layer-list>

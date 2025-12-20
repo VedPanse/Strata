@@ -1,0 +1,17 @@
+# Ignore environment files containing secrets
+.env
+composeApp/src/.env
+src/.env
+
+# Gradle and build outputs
+.gradle/
+build/
+composeApp/build/
+*/build/
+
+# IDE files
+.idea/
+*.iml
+
+# OS files
+.DS_Stor
