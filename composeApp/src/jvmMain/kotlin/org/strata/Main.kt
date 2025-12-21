@@ -35,9 +35,10 @@ fun main() {
                 alwaysOnTop = true,
                 undecorated = true,
                 resizable = false,
+                transparent = true,
                 state =
                     rememberWindowState(
-                        size = DpSize(420.dp, 180.dp),
+                        size = DpSize(420.dp, 820.dp),
                         position = WindowPosition.Aligned(Alignment.BottomEnd),
                     ),
             ) {
