@@ -1,0 +1,43 @@
+CREATE TABLE IF NOT EXISTS plan_state (
+  id TEXT NOT NULL PRIMARY KEY,
+  status TEXT NOT NULL,
+  pending_question TEXT,
+  pending_context TEXT,
+  pending_action_json TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS llm_memory (
+  id TEXT NOT NULL PRIMARY KEY,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+selectAll:
+SELECT * FROM plan_state;
+
+upsert:
+INSERT OR REPLACE INTO plan_state(
+  id,
+  status,
+  pending_question,
+  pending_context,
+  pending_action_json,
+  updated_at
+) VALUES (?, ?, ?, ?, ?, ?);
+
+clearById:
+DELETE FROM plan_state WHERE id = ?;
+
+selectAllMemory:
+SELECT * FROM llm_memory ORDER BY created_at DESC;
+
+insertMemory:
+INSERT INTO llm_memory(
+  id,
+  content,
+  created_at
+) VALUES (?, ?, ?);
+
+clearMemory:
+DELETE FROM llm_memory;

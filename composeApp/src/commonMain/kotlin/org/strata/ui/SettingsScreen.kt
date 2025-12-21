@@ -62,6 +62,7 @@ import org.strata.auth.AuthSession
 import org.strata.auth.GoogleAuth
 import org.strata.auth.JwtTools
 import org.strata.auth.SessionStorage
+import org.strata.persistence.MemoryStore
 import strata.composeapp.generated.resources.Res
 import strata.composeapp.generated.resources.UserProfile
 
@@ -134,9 +135,14 @@ class SettingsScreen : Screen {
                 PreferencesSection()
                 Spacer(modifier = Modifier.height(16.dp))
 
-                PrivacySecuritySection(onDeleteAccount = {
-                    SessionStorage.clear()
-                })
+                PrivacySecuritySection(
+                    onDeleteAccount = {
+                        SessionStorage.clear()
+                    },
+                    onDeleteMemory = {
+                        MemoryStore.clear()
+                    },
+                )
                 Spacer(modifier = Modifier.height(16.dp))
 
                 SupportLegalSection()
@@ -442,7 +448,10 @@ private fun LabeledRow(
 }
 
 @Composable
-private fun PrivacySecuritySection(onDeleteAccount: () -> Unit) {
+private fun PrivacySecuritySection(
+    onDeleteAccount: () -> Unit,
+    onDeleteMemory: () -> Unit,
+) {
     SectionCard(title = "Privacy & Security") {
         // Manage Permissions (show granted scopes)
         Text("Manage Permissions", fontWeight = FontWeight.Medium)
@@ -450,6 +459,23 @@ private fun PrivacySecuritySection(onDeleteAccount: () -> Unit) {
         Column(modifier = Modifier.padding(start = 8.dp)) {
             AuthScopes.ALL.forEach { scope ->
                 Text("• $scope", color = Color.Gray, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        androidx.compose.material3.HorizontalDivider(color = Color(0x22FFFFFF))
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFFB74D))
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Delete LLM memory", fontWeight = FontWeight.Medium, color = Color(0xFFFFB74D))
+                Text("Clear saved preferences and facts", color = Color.Gray, fontSize = 12.sp)
+            }
+            Button(
+                onClick = onDeleteMemory,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A)),
+            ) {
+                Text("Delete")
             }
         }
         Spacer(Modifier.height(12.dp))

@@ -6,12 +6,14 @@ package org.strata.ai
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonArray
@@ -28,69 +30,80 @@ actual object TicketsAi {
     private val json = Json { ignoreUnknownKeys = true }
 
     @Serializable
-    private data class GeminiCandidate(val content: GeminiContent? = null)
+    private data class ChatMessage(val role: String, val content: String)
 
     @Serializable
-    private data class GeminiContent(val parts: List<GeminiPart> = emptyList())
+    private data class ChatRequest(
+        val model: String,
+        val messages: List<ChatMessage>,
+        val temperature: Double = 0.2,
+    )
 
     @Serializable
-    private data class GeminiPart(val text: String? = null)
+    private data class ChatChoice(val message: ChatMessage? = null)
 
     @Serializable
-    private data class GeminiResponse(val candidates: List<GeminiCandidate> = emptyList())
+    private data class ChatResponse(val choices: List<ChatChoice> = emptyList())
 
     actual suspend fun extractTickets(
         unreadMails: List<GmailMail>,
         todayEvents: List<CalendarEvent>,
     ): Result<List<ExtractedTicket>> {
-        val apiKey = runCatching { GeminiSupport.requireApiKey() }.getOrElse { return Result.failure(it) }
+        LlmHealth.requestBlockReason()?.let { return Result.failure(IllegalStateException(it)) }
+        val apiKey = runCatching { OpenAiSupport.requireApiKey() }.getOrElse { return Result.failure(it) }
 
         val prompt = buildPrompt(unreadMails, todayEvents)
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey"
-        val requestBody =
-            mapOf(
-                "contents" to
-                    listOf(
-                        mapOf(
-                            "role" to "user",
-                            "parts" to listOf(mapOf("text" to prompt)),
-                        ),
-                    ),
-            )
-        return runCatching {
-            val response =
-                http.post(url) {
-                    contentType(ContentType.Application.Json)
-                    setBody(JsonMapEncoder.encodeToString(requestBody))
-                }
-            val status = response.status.value
-            val body = response.bodyAsText()
-            if (status !in 200..299) {
-                val message = GeminiSupport.extractErrorMessage(json, body) ?: body.take(1_000)
-                error("Gemini HTTP $status: $message")
-            }
-            val text = extractText(body)
-            println("[DEBUG_LOG][TicketsAi] Gemini raw text (truncated): ${text.take(500)}")
-            val items = parseTicketsJson(text)
-            println("[DEBUG_LOG][TicketsAi] Parsed ${items.size} ticket item(s) from Gemini response")
-            items
+        val cacheKey = "tickets:$prompt"
+        LlmCache.get(cacheKey)?.let { cached ->
+            val items = runCatching { parseTicketsJson(cached) }.getOrNull()
+            if (items != null) return Result.success(items)
         }
+        val url = "https://api.openai.com/v1/chat/completions"
+        val requestBody =
+            ChatRequest(
+                model = "gpt-4o-mini",
+                messages = listOf(ChatMessage(role = "user", content = prompt)),
+            )
+        val result =
+            runCatching {
+                val response =
+                    http.post(url) {
+                        header("Authorization", "Bearer $apiKey")
+                        contentType(ContentType.Application.Json)
+                        setBody(json.encodeToString(ChatRequest.serializer(), requestBody))
+                    }
+                val status = response.status.value
+                val body = response.bodyAsText()
+                if (status !in 200..299) {
+                    val message = OpenAiSupport.extractErrorMessage(json, body) ?: body.take(1_000)
+                    error("OpenAI HTTP $status: $message")
+                }
+                val text = extractText(body)
+                println("[DEBUG_LOG][TicketsAi] OpenAI raw text (truncated): ${text.take(500)}")
+                val items = parseTicketsJson(text)
+                println("[DEBUG_LOG][TicketsAi] Parsed ${items.size} ticket item(s) from OpenAI response")
+                text to items
+            }
+        result.onSuccess { (text, _) ->
+            LlmHealth.recordSuccess()
+            LlmCache.put(cacheKey, text)
+        }.onFailure { err ->
+            LlmHealth.recordFailure(err)
+        }
+        return result.map { it.second }
     }
 
     private fun extractText(body: String): String {
         // Try to parse structured, else fallback to best-effort
         return runCatching {
-            val parsed = json.decodeFromString(GeminiResponse.serializer(), body)
-            parsed.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text?.takeIf { !it.isNullOrBlank() }
+            val parsed = json.decodeFromString(ChatResponse.serializer(), body)
+            parsed.choices.firstOrNull()?.message?.content?.takeIf { !it.isNullOrBlank() }
         }.getOrNull() ?: run {
             // fallback parse
             val root = json.parseToJsonElement(body).jsonObject
-            val candidates = root["candidates"] as? JsonArray
-            val part0 =
-                candidates?.firstOrNull()?.jsonObject?.get("content")?.jsonObject
-                    ?.get("parts") as? JsonArray
-            part0?.firstOrNull()?.jsonObject?.get("text")?.jsonPrimitive?.content
-        } ?: throw IllegalStateException("Empty response from Gemini")
+            val choices = root["choices"] as? JsonArray
+            choices?.firstOrNull()?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.content
+        } ?: throw IllegalStateException("Empty response from OpenAI")
     }
 
     private fun parseTicketsJson(text: String): List<ExtractedTicket> {

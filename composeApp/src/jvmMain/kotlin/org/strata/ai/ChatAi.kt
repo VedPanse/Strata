@@ -7,6 +7,7 @@ package org.strata.ai
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -19,15 +20,15 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
 /**
- * JVM implementation of the Gemini chat client.
+ * JVM implementation of the OpenAI chat client.
  *
  * The prompt wrapper enforces a strict JSON array of actions that the agent
  * runtime can execute deterministically.
  */
 actual object ChatAi {
     // ---------- Configuration ----------
-    private const val MODEL = "gemini-2.0-flash"
-    private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+    private const val MODEL = "gpt-4o-mini"
+    private const val BASE_URL = "https://api.openai.com/v1/chat/completions"
     private val KOLKATA_ZONE: ZoneId = ZoneId.of("Asia/Kolkata")
     private val ISO_OFFSET: DateTimeFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
 
@@ -48,25 +49,19 @@ actual object ChatAi {
             prettyPrint = false
         }
 
-    // ----- Gemini v1beta generateContent request/response -----
-    @Serializable private data class Part(val text: String? = null)
+    private var quotaInitialized = false
 
-    @Serializable private data class Content(val parts: List<Part>)
+    @Serializable private data class ChatMessage(val role: String, val content: String)
 
-    @Serializable private data class GenerateContentRequest(val contents: List<Content>)
-
-    @Serializable private data class Candidate(
-        val content: Content? = null,
-        // e.g., "STOP", "SAFETY"
-        val finishReason: String? = null,
+    @Serializable private data class ChatRequest(
+        val model: String,
+        val messages: List<ChatMessage>,
+        val temperature: Double = 0.2,
     )
 
-    @Serializable private data class PromptFeedback(val blockReason: String? = null)
+    @Serializable private data class ChatChoice(val message: ChatMessage? = null)
 
-    @Serializable private data class GenerateContentResponse(
-        val candidates: List<Candidate> = emptyList(),
-        val promptFeedback: PromptFeedback? = null,
-    )
+    @Serializable private data class ChatResponse(val choices: List<ChatChoice> = emptyList())
 
     // ---------- Public API ----------
     actual suspend fun mailRewrite(
@@ -85,7 +80,7 @@ actual object ChatAi {
     }
 
     /**
-     * Send a prompt to Gemini. We wrap the caller's prompt in our agent instructions so the
+     * Send a prompt to OpenAI. We wrap the caller's prompt in our agent instructions so the
      * model returns ONLY the JSON action list we expect.
      */
     actual suspend fun sendPrompt(prompt: String): Result<String> {
@@ -94,47 +89,53 @@ actual object ChatAi {
     }
 
     // ---------- Core request path (deduplicated) ----------
-    private suspend fun callGemini(fullPrompt: String): Result<String> =
-        runCatching {
-            val apiKey = GeminiSupport.requireApiKey()
-            val url = "$BASE_URL/$MODEL:generateContent?key=$apiKey"
+    private suspend fun callGemini(fullPrompt: String): Result<String> {
+        LlmHealth.requestBlockReason()?.let { return Result.failure(IllegalStateException(it)) }
 
-            val req =
-                GenerateContentRequest(
-                    contents = listOf(Content(parts = listOf(Part(text = fullPrompt)))),
-                )
+        val cacheKey = "chat:$fullPrompt"
+        LlmCache.get(cacheKey)?.let { return Result.success(it) }
 
-            val resp =
-                http.post(url) {
-                    contentType(ContentType.Application.Json)
-                    setBody(json.encodeToString(GenerateContentRequest.serializer(), req))
+        ensureQuotaConfigured()
+
+        val result =
+            runCatching {
+                val apiKey = OpenAiSupport.requireApiKey()
+                val req =
+                    ChatRequest(
+                        model = MODEL,
+                        messages = listOf(ChatMessage(role = "user", content = fullPrompt)),
+                    )
+
+                val resp =
+                    http.post(BASE_URL) {
+                        contentType(ContentType.Application.Json)
+                        header("Authorization", "Bearer $apiKey")
+                        setBody(json.encodeToString(ChatRequest.serializer(), req))
+                    }
+
+                val status = resp.status.value
+                val rawBody = resp.bodyAsText()
+
+                // 1) Surface non-success with full server message
+                if (status !in 200..299) {
+                    val message = OpenAiSupport.extractErrorMessage(json, rawBody) ?: rawBody.take(1_000)
+                    error("OpenAI HTTP $status: $message")
                 }
 
-            val status = resp.status.value
-            val rawBody = resp.bodyAsText()
-
-            // 1) Surface non-success with full server message
-            if (status !in 200..299) {
-                val message = GeminiSupport.extractErrorMessage(json, rawBody) ?: rawBody.take(1_000)
-                error("Gemini HTTP $status: $message")
+                val parsed = json.decodeFromString(ChatResponse.serializer(), rawBody)
+                parsed.choices.firstOrNull()?.message?.content?.trim()
+                    ?: error("OpenAI returned an empty message")
             }
 
-            // 2) Parse the success envelope
-            val parsed = json.decodeFromString(GenerateContentResponse.serializer(), rawBody)
-
-            // 3) Safety/blocked prompt?
-            parsed.promptFeedback?.blockReason?.let { br ->
-                error("Gemini blocked the prompt (blockReason=$br)")
-            }
-
-            // 4) Candidate / safety checks
-            val first = parsed.candidates.firstOrNull() ?: error("Gemini returned no candidates")
-            if (first.finishReason == "SAFETY") error("Gemini stopped for safety (finishReason=SAFETY)")
-
-            // 5) Extract text
-            first.content?.parts?.firstOrNull()?.text?.trim()
-                ?: error("Gemini returned an empty content.parts[0].text")
+        result.onSuccess { response ->
+            LlmHealth.recordSuccess()
+            LlmCache.put(cacheKey, response)
+        }.onFailure { err ->
+            LlmHealth.recordFailure(err)
         }
+
+        return result
+    }
 
     // ---------- Prompt builders ----------
     private fun buildAgentPrompt(userText: String): String =
@@ -154,6 +155,13 @@ actual object ChatAi {
 
     private fun nowIsoKolkata(): String = ZonedDateTime.now(KOLKATA_ZONE).format(ISO_OFFSET)
 
+    private fun ensureQuotaConfigured() {
+        if (quotaInitialized) return
+        quotaInitialized = true
+        val raw = OpenAiSupport.readEnv("OPENAI_DAILY_QUOTA")?.trim()?.toIntOrNull()
+        LlmHealth.setDailyLimit(raw)
+    }
+
     // ---------- Utilities ----------
     // ---------- Prompts ----------
     val idToken = org.strata.auth.SessionStorage.read()?.idToken
@@ -166,10 +174,15 @@ permission for every micro-decision. Plan ahead, resolve ambiguity, and surface 
 the clarifications that truly need human input.
 
 User identity: $displayName. Address people and craft content appropriately when drafting communications.
+Long-term memory is provided in the prompt. Only store new memory when the user explicitly asks.
+Tone: be playful, super friendly, and helpful - like a trusted assistant who works for the user.
+When drafting emails, proactively prepare a clean draft and use `send_email` so the user can edit in the preview.
 
 GENERAL OPERATING PRINCIPLES:
 - Internalize the full user request before acting; break it into ordered steps and use
   follow-up assumptions only when details are missing.
+- If the user's intent is ambiguous (e.g., "clear my inbox"), ask a clarification via
+  an `await_user` action before taking any operational step.
 - Choose the most contextually appropriate items when multiple matches exist (titles,
   dates, notes, related email threads). Prefer smart defaults, and record any inference
   inside "assumptions".
@@ -195,6 +208,12 @@ ALLOWED ACTION TYPES (exactly one top-level key per object):
 - add_task
 - update_task
 - delete_task
+- await_user
+- external_action
+- remember
+- clear_memory
+- web_search
+- fetch_url
 
 FORMAT RULES:
 - Always output a pure JSON array; no prose; no code fences; no trailing commas.
@@ -210,6 +229,9 @@ FORMAT RULES:
   "duration_minutes"; use 24-hour Asia/Kolkata times.
 - Never include any keys beyond the allowed action types at the top level of each object.
 - Assume the current local timestamp is {{NOW_ISO}} (Asia/Kolkata) unless the user specifies otherwise.
+- If you output `await_user` or `external_action`, the array must contain only that single action.
+- Use `remember` only when the user explicitly asks you to remember something or store a preference.
+- Use `web_search` or `fetch_url` when the user asks for current info, links, or online research.
 
 STRICT EMAIL POLICY:
 - Only trigger mail actions when the user clearly asks to send/forward/reply/notify by email.
@@ -220,8 +242,10 @@ INTERACTION RULES:
 - After every operational action (anything except `user_msg`), emit a trailing
   `user_msg` summarizing what you just did and offering the next logical choice or
   clarification.
-- Any follow-up question must appear inside a `user_msg`. Keep them concise and purposeful.
+- Any follow-up question must appear inside a `user_msg` or `await_user`. Keep them concise and purposeful.
 - If the user is purely conversational, respond with a single `user_msg` only.
+- For third-party services or paid actions (e.g., ordering food), use `external_action`
+  and include a confirmation question before any execution.
 
 ACTION PAYLOAD CONTRACTS:
 
@@ -359,6 +383,58 @@ delete_task:
     "match_due_time": "HH:MM",            // optional helper for matching
     "delete_all": true,                    // optional; true means delete every task matching filters
     "assumptions": "optional notes"
+  }
+}
+
+await_user:
+{
+  "await_user": {
+    "question": "string (the clarifying question)",
+    "context": "optional short context for resuming",
+    "assumptions": "optional notes"
+  }
+}
+
+external_action:
+{
+  "external_action": {
+    "provider": "string (e.g., 'ubereats')",
+    "intent": "string (e.g., 'order_food')",
+    "params": { "key": "value" },
+    "confirmation_question": "string (ask before any execution)",
+    "auth_state": "optional: linked|missing|unknown",
+    "assumptions": "optional notes"
+  }
+}
+
+remember:
+{
+  "remember": {
+    "content": "string (concise fact to store)",
+    "assumptions": "optional notes"
+  }
+}
+
+clear_memory:
+{
+  "clear_memory": {
+    "reason": "optional note"
+  }
+}
+
+web_search:
+{
+  "web_search": {
+    "query": "string",
+    "top_k": 1
+  }
+}
+
+fetch_url:
+{
+  "fetch_url": {
+    "url": "https://example.com",
+    "max_chars": 2000
   }
 }
 

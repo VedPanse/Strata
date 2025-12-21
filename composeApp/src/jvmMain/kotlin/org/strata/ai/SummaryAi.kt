@@ -6,6 +6,7 @@ package org.strata.ai
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -13,6 +14,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.datetime.LocalDateTime
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -29,85 +31,74 @@ actual object SummaryAi {
 
     // Minimal response model for Gemini generateContent
     @Serializable
-    private data class GeminiCandidate(
-        val content: GeminiContent? = null,
+    private data class ChatMessage(val role: String, val content: String)
+
+    @Serializable
+    private data class ChatRequest(
+        val model: String,
+        val messages: List<ChatMessage>,
+        val temperature: Double = 0.2,
     )
 
     @Serializable
-    private data class GeminiContent(
-        val parts: List<GeminiPart> = emptyList(),
-    )
+    private data class ChatChoice(val message: ChatMessage? = null)
 
     @Serializable
-    private data class GeminiPart(
-        val text: String? = null,
-    )
-
-    @Serializable
-    private data class GeminiResponse(
-        val candidates: List<GeminiCandidate> = emptyList(),
-        val promptFeedback: PromptFeedback? = null,
-    )
-
-    @Serializable
-    private data class PromptFeedback(
-        val blockReason: String? = null,
-    )
+    private data class ChatResponse(val choices: List<ChatChoice> = emptyList())
 
     actual suspend fun summarizeDay(
         unreadMails: List<GmailMail>,
         todayEvents: List<CalendarEvent>,
         tasks: List<TaskItem>,
     ): Result<String> {
-        val apiKey = runCatching { GeminiSupport.requireApiKey() }.getOrElse { return Result.failure(it) }
+        LlmHealth.requestBlockReason()?.let { return Result.failure(IllegalStateException(it)) }
+        val apiKey = runCatching { OpenAiSupport.requireApiKey() }.getOrElse { return Result.failure(it) }
 
         val prompt = buildPrompt(unreadMails, todayEvents, tasks)
+        val cacheKey = "summary:$prompt"
+        LlmCache.get(cacheKey)?.let { return Result.success(it) }
 
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey"
+        val url = "https://api.openai.com/v1/chat/completions"
         val requestBody =
-            mapOf(
-                "contents" to
-                    listOf(
-                        mapOf(
-                            "role" to "user",
-                            "parts" to listOf(mapOf("text" to prompt)),
-                        ),
-                    ),
+            ChatRequest(
+                model = "gpt-4o-mini",
+                messages = listOf(ChatMessage(role = "user", content = prompt)),
             )
-        return runCatching {
-            val response =
-                http.post(url) {
-                    contentType(ContentType.Application.Json)
-                    setBody(JsonMapEncoder.encodeToString(requestBody))
+        val result =
+            runCatching {
+                val response =
+                    http.post(url) {
+                        header("Authorization", "Bearer $apiKey")
+                        contentType(ContentType.Application.Json)
+                        setBody(json.encodeToString(ChatRequest.serializer(), requestBody))
+                    }
+                val status = response.status.value
+                val body = response.bodyAsText()
+                if (status !in 200..299) {
+                    val message = OpenAiSupport.extractErrorMessage(json, body) ?: body.take(1_000)
+                    error("OpenAI HTTP $status: $message")
                 }
-            val status = response.status.value
-            val body = response.bodyAsText()
-            if (status !in 200..299) {
-                val message = GeminiSupport.extractErrorMessage(json, body) ?: body.take(1_000)
-                error("Gemini HTTP $status: $message")
+                val parsed = runCatching { json.decodeFromString<ChatResponse>(body) }.getOrNull()
+                val text = parsed?.choices?.firstOrNull()?.message?.content ?: extractTextBestEffort(body)
+                if (text.isNullOrBlank()) error("Empty response from OpenAI")
+                text.trim()
             }
-            val parsed = runCatching { json.decodeFromString<GeminiResponse>(body) }.getOrNull()
-            val text =
-                parsed?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-                    ?: extractTextBestEffort(body)
-            if (text.isNullOrBlank()) error("Empty response from Gemini")
-            text.trim()
+        result.onSuccess { response ->
+            LlmHealth.recordSuccess()
+            LlmCache.put(cacheKey, response)
+        }.onFailure { err ->
+            LlmHealth.recordFailure(err)
         }
+        return result
     }
 
     private fun extractTextBestEffort(body: String): String? {
         return runCatching {
             val root = json.parseToJsonElement(body).jsonObject
-            val candidates = root["candidates"]
-            if (candidates != null && candidates is kotlinx.serialization.json.JsonArray) {
-                val first = candidates.firstOrNull()?.jsonObject
-                val content = first?.get("content")?.jsonObject
-                val parts = content?.get("parts") as? kotlinx.serialization.json.JsonArray
-                val part0 = parts?.firstOrNull()?.jsonObject
-                part0?.get("text")?.jsonPrimitive?.content
-            } else {
-                null
-            }
+            val choices = root["choices"] as? kotlinx.serialization.json.JsonArray
+            val first = choices?.firstOrNull()?.jsonObject
+            val message = first?.get("message")?.jsonObject
+            message?.get("content")?.jsonPrimitive?.content
         }.getOrNull()
     }
 

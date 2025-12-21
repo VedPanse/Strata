@@ -38,10 +38,12 @@ import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -81,6 +83,7 @@ import org.jetbrains.compose.resources.painterResource
 import org.strata.ai.RefreshSignals
 import org.strata.ai.SummaryAi
 import org.strata.ai.macro.MailPreviewOverlay
+import org.strata.ai.LlmHealth
 import org.strata.auth.CalendarApi
 import org.strata.auth.CalendarEvent
 import org.strata.auth.GmailApi
@@ -100,6 +103,7 @@ import org.strata.ui.ticket.TicketStatus
 import org.strata.ui.ticket.TicketTypes
 import org.strata.ui.ticket.TicketUI
 import org.strata.ui.ticket.TicketUiModel
+import org.strata.persistence.PlanStore
 import strata.composeapp.generated.resources.HomescreenWallpaper
 import strata.composeapp.generated.resources.Res
 import strata.composeapp.generated.resources.StrataNoText
@@ -480,6 +484,12 @@ class Homescreen : Screen {
         }
         // Chat messages state (user ↔ assistant)
         val messages = remember { mutableStateListOf<ChatMessage>() }
+        LaunchedEffect(Unit) {
+            val pending = PlanStore.getPending()
+            if (pending != null && messages.none { it.role == "assistant" && it.text == pending.question }) {
+                messages.add(ChatMessage("assistant", pending.question))
+            }
+        }
         Box(modifier = Modifier.fillMaxSize()) {
             Row(modifier = Modifier.fillMaxSize()) {
                 // Left spacer/pane (reserved for future navigation)
@@ -519,6 +529,12 @@ class Homescreen : Screen {
                                     .absoluteOffset(y = (-7).dp),
                         )
                         Text("Strata", fontWeight = FontWeight.Bold, fontSize = 25.sp)
+                        LlmApiHealth(
+                            modifier =
+                                Modifier
+                                    .padding(start = 16.dp)
+                                    .width(220.dp),
+                        )
                         Spacer(modifier = Modifier.weight(1f))
                         UserProfile()
                     }
@@ -575,6 +591,7 @@ class Homescreen : Screen {
                                 onRefresh = { triggerFullRefresh() },
                                 isOnline = isOnline,
                                 messages = messages,
+                                recommendations = buildPlayfulRecommendations(mailItems, calEvents, tasksItems),
                                 modifier = Modifier.fillMaxHeight(),
                             )
                         }
@@ -696,6 +713,120 @@ private fun HeroImage() {
                 .clip(RoundedCornerShape(HomeDimens.HeroCorner)),
         contentScale = ContentScale.Crop,
     )
+}
+
+private fun buildPlayfulRecommendations(
+    mails: List<GmailMail>,
+    events: List<CalendarEvent>,
+    tasks: List<TaskItem>,
+): List<String> {
+    val suggestions = mutableListOf<String>()
+    val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+
+    val upcomingEvent =
+        events.minByOrNull { it.start }
+            ?.takeIf { it.start.date == now.date }
+
+    if (upcomingEvent != null) {
+        val time = "%02d:%02d".format(upcomingEvent.start.hour, upcomingEvent.start.minute)
+        suggestions += "You have \"${upcomingEvent.title}\" at $time. Want me to prep notes or set a reminder?"
+    }
+
+    val billMail =
+        mails.firstOrNull { mail ->
+            val text = (mail.subject + " " + mail.snippet).lowercase()
+            listOf("invoice", "bill", "payment due", "receipt").any { text.contains(it) }
+        }
+    if (billMail != null) {
+        suggestions += "That looks like a bill or receipt. Want me to add a payment reminder?"
+    }
+
+    val recruiterMail =
+        mails.firstOrNull { mail ->
+            val text = (mail.subject + " " + mail.snippet).lowercase()
+            listOf("interview", "recruiter", "application", "position").any { text.contains(it) }
+        }
+    if (recruiterMail != null) {
+        suggestions += "Looks like a hiring email. Want me to draft a reply or add a follow-up?"
+    }
+
+    val dueToday =
+        tasks.firstOrNull { task ->
+            val due = task.due ?: return@firstOrNull false
+            due.date == now.date
+        }
+    if (dueToday != null) {
+        suggestions += "You have tasks due today. Want me to block a focus slot?"
+    }
+
+    if (suggestions.isEmpty()) {
+        suggestions += "Want me to plan a chill, productive day for you?"
+    }
+
+    return suggestions.take(3)
+}
+
+@Composable
+private fun LlmApiHealth(modifier: Modifier = Modifier) {
+    val status by LlmHealth.status.collectAsState()
+    val limit = status.dailyLimit
+    val percent =
+        if (limit != null && limit > 0) {
+            ((status.usedRequests * 100) / limit).coerceIn(0, 100)
+        } else {
+            null
+        }
+    val progress = (percent ?: 0) / 100f
+    val exhausted = status.exhausted
+    val hasError = status.lastError != null
+    val statusLabel =
+        when {
+            exhausted -> "EXHAUSTED"
+            hasError -> "ERROR"
+            else -> "OK"
+        }
+    val statusColor =
+        when {
+            exhausted -> Color(0xFFE57373)
+            hasError -> Color(0xFFFFB74D)
+            else -> Color(0xFF81C784)
+        }
+    val percentLabel = percent?.let { "$it%" } ?: "—%"
+
+    Column(modifier = modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "OpenAI API",
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = percentLabel,
+                color = Color.White.copy(alpha = 0.7f),
+                fontSize = 11.sp,
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = statusLabel,
+                color = statusColor,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(6.dp)),
+            color = statusColor,
+            trackColor = Color.White.copy(alpha = 0.15f),
+        )
+    }
 }
 
 @Composable
@@ -845,6 +976,7 @@ private fun SummaryPanel(
     onRefresh: () -> Unit,
     isOnline: Boolean,
     messages: List<ChatMessage>,
+    recommendations: List<String>,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -907,6 +1039,25 @@ private fun SummaryPanel(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+
+        if (recommendations.isNotEmpty()) {
+            Text(
+                "Suggestions",
+                fontSize = 13.sp,
+                color = Color.White.copy(alpha = 0.72f),
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                recommendations.forEach { suggestion ->
+                    Text(
+                        "• $suggestion",
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
 
         Text(
             "Assistant",

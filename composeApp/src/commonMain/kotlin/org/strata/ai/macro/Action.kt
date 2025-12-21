@@ -31,6 +31,10 @@ import org.strata.auth.GmailApi
 import org.strata.auth.SessionStorage
 import org.strata.auth.TaskItem
 import org.strata.auth.TasksApi
+import org.strata.ai.WebFetchApi
+import org.strata.ai.WebSearchResult
+import org.strata.persistence.MemoryStore
+import org.strata.persistence.PlanStore
 import kotlin.math.abs
 import kotlin.random.Random
 
@@ -53,6 +57,12 @@ object ActionSerializer : kotlinx.serialization.json.JsonContentPolymorphicSeria
             "add_task" in element.jsonObject -> Action.AddTask.serializer()
             "update_task" in element.jsonObject -> Action.UpdateTask.serializer()
             "delete_task" in element.jsonObject -> Action.DeleteTask.serializer()
+            "await_user" in element.jsonObject -> Action.AwaitUser.serializer()
+            "external_action" in element.jsonObject -> Action.ExternalAction.serializer()
+            "remember" in element.jsonObject -> Action.Remember.serializer()
+            "clear_memory" in element.jsonObject -> Action.ClearMemory.serializer()
+            "web_search" in element.jsonObject -> Action.WebSearch.serializer()
+            "fetch_url" in element.jsonObject -> Action.FetchUrl.serializer()
             else -> error("Unknown action key(s): ${element.jsonObject.keys}")
         }
 }
@@ -187,6 +197,18 @@ sealed class Action {
     @Serializable data class UpdateTask(val update_task: UpdateTaskData) : Action()
 
     @Serializable data class DeleteTask(val delete_task: DeleteTaskData) : Action()
+
+    @Serializable data class AwaitUser(val await_user: AwaitUserData) : Action()
+
+    @Serializable data class ExternalAction(val external_action: ExternalActionData) : Action()
+
+    @Serializable data class Remember(val remember: RememberData) : Action()
+
+    @Serializable data class ClearMemory(val clear_memory: ClearMemoryData) : Action()
+
+    @Serializable data class WebSearch(val web_search: WebSearchData) : Action()
+
+    @Serializable data class FetchUrl(val fetch_url: FetchUrlData) : Action()
 }
 
 // ───────────────────── Payloads ───────────────────── //
@@ -310,6 +332,60 @@ data class DeleteTaskData(
     val delete_all: Boolean? = null,
     val assumptions: String? = null,
 )
+
+@Serializable
+data class AwaitUserData(
+    val question: String,
+    val context: String? = null,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class ExternalActionData(
+    val provider: String,
+    val intent: String,
+    val params: JsonObject? = null,
+    val confirmation_question: String? = null,
+    val auth_state: String? = null,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class RememberData(
+    val content: String,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class ClearMemoryData(
+    val reason: String? = null,
+)
+
+@Serializable
+data class WebSearchData(
+    val query: String,
+    val top_k: Int? = null,
+)
+
+@Serializable
+data class FetchUrlData(
+    val url: String,
+    val max_chars: Int? = null,
+)
+
+private fun formatSearchResults(results: List<WebSearchResult>): String {
+    if (results.isEmpty()) return ""
+    return buildString {
+        appendLine("Here are the top results:")
+        results.forEachIndexed { idx, result ->
+            val line = "${idx + 1}. ${result.title} - ${result.url}"
+            appendLine(line)
+            result.snippet?.takeIf { it.isNotBlank() }?.let { snippet ->
+                appendLine("   ${snippet.trim()}")
+            }
+        }
+    }.trim()
+}
 
 // ───────────────────── Parser ───────────────────── //
 
@@ -861,9 +937,91 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
         )
     }
 
+    var pendingSet = false
+    var shouldClearPending = false
+    val pendingEncoder = Json { encodeDefaults = true }
+
     actions.forEachIndexed { idx, action ->
+        if (pendingSet) return@forEachIndexed
         when (action) {
+            is Action.Remember -> {
+                val content = action.remember.content.trim()
+                if (content.isNotEmpty()) {
+                    MemoryStore.add(content)
+                    userMessages += "Got it - I'll remember that."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.ClearMemory -> {
+                MemoryStore.clear()
+                userMessages += "Done. I've cleared your saved memory."
+                suppressNextUserMsg = true
+            }
+            is Action.WebSearch -> {
+                val query = action.web_search.query.trim()
+                if (query.isEmpty()) return@forEachIndexed
+                val limit = action.web_search.top_k?.coerceIn(1, 5) ?: 3
+                val results = WebFetchApi.search(query, limit).getOrElse { error ->
+                    userMessages += "I couldn't search the web just now (${error.message})."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                val formatted =
+                    formatSearchResults(results).ifBlank {
+                        "I didn't find any good results for \"$query\"."
+                    }
+                userMessages += formatted
+                suppressNextUserMsg = true
+            }
+            is Action.FetchUrl -> {
+                val url = action.fetch_url.url.trim()
+                if (url.isEmpty()) return@forEachIndexed
+                val maxChars = action.fetch_url.max_chars?.coerceIn(500, 4000) ?: 2000
+                val content = WebFetchApi.fetch(url, maxChars).getOrElse { error ->
+                    userMessages += "I couldn't fetch that page (${error.message})."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                val snippet = content.trim().take(maxChars)
+                userMessages += "Here's a quick summary from $url:\n${snippet}"
+                suppressNextUserMsg = true
+            }
+            is Action.AwaitUser -> {
+                val question =
+                    action.await_user.question.trim().ifBlank {
+                        "I need a bit more detail before I proceed. Could you clarify?"
+                    }
+                PlanStore.savePending(
+                    status = "await_user",
+                    question = question,
+                    context = action.await_user.context,
+                    actionJson = null,
+                )
+                userMessages += question
+                suppressNextUserMsg = true
+                pendingSet = true
+            }
+            is Action.ExternalAction -> {
+                val data = action.external_action
+                val question =
+                    data.confirmation_question?.trim().takeIf { !it.isNullOrBlank() }
+                        ?: "I can help with ${data.intent} via ${data.provider}. Want me to proceed?"
+                val actionJson =
+                    runCatching {
+                        pendingEncoder.encodeToString(ExternalActionData.serializer(), data)
+                    }.getOrNull()
+                PlanStore.savePending(
+                    status = "external_action",
+                    question = question,
+                    context = data.intent,
+                    actionJson = actionJson,
+                )
+                userMessages += question
+                suppressNextUserMsg = true
+                pendingSet = true
+            }
             is Action.SendEmail -> {
+                shouldClearPending = true
                 val data = action.send_email
                 val recipients = data.to.filter { it.isNotBlank() }
                 if (recipients.isEmpty()) {
@@ -911,21 +1069,41 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
                     }
                 }
             }
-            is Action.ExplainEmail -> println("[$idx] explain_email → email_id=${action.explain_email.email_id}")
-            is Action.ReplyToEmail -> println("[$idx] reply_to_email → email_id=${action.reply_to_email.email_id}")
-            is Action.ForwardEmail -> println("[$idx] forward_email → email_id=${action.forward_email.email_id}")
-            is Action.DeleteEmail -> println("[$idx] delete_email → email_id=${action.delete_email.email_id}")
+            is Action.ExplainEmail -> {
+                shouldClearPending = true
+                println("[$idx] explain_email → email_id=${action.explain_email.email_id}")
+            }
+            is Action.ReplyToEmail -> {
+                shouldClearPending = true
+                println("[$idx] reply_to_email → email_id=${action.reply_to_email.email_id}")
+            }
+            is Action.ForwardEmail -> {
+                shouldClearPending = true
+                println("[$idx] forward_email → email_id=${action.forward_email.email_id}")
+            }
+            is Action.DeleteEmail -> {
+                shouldClearPending = true
+                println("[$idx] delete_email → email_id=${action.delete_email.email_id}")
+            }
             is Action.UserMsg -> {
                 println("[$idx] user_msg → ${action.user_msg.text}")
                 val text = action.user_msg.text.trim()
                 if (suppressNextUserMsg) {
                     println("[$idx] user_msg suppressed due to post-verification guard")
+                    if (text.isNotEmpty()) {
+                        if (userMessages.isNotEmpty()) {
+                            userMessages[userMessages.lastIndex] = text
+                        } else {
+                            userMessages += text
+                        }
+                    }
                     suppressNextUserMsg = false
                 } else if (text.isNotEmpty()) {
                     userMessages += text
                 }
             }
             is Action.AddCalendarEvent -> {
+                shouldClearPending = true
                 val ev = action.add_calendar_event
                 val contextLabel = "add_calendar_event#$idx"
                 val date = runCatching { LocalDate.parse(ev.date) }.getOrNull()
@@ -1065,6 +1243,7 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
                 }
             }
             is Action.UpdateCalendarEvent -> {
+                shouldClearPending = true
                 val data = action.update_calendar_event
                 val contextLabel = "update_calendar_event#$idx"
 
@@ -1324,6 +1503,7 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
             }
 
             is Action.DeleteCalendarEvent -> {
+                shouldClearPending = true
                 val ev = action.delete_calendar_event
                 val contextLabel = "delete_calendar_event#$idx"
                 val assumptionsRaw = ev.assumptions
@@ -1487,6 +1667,7 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
                 suppressNextUserMsg = true
             }
             is Action.AddTask -> {
+                shouldClearPending = true
                 val task = action.add_task
                 val title = task.title.trim()
                 if (title.isEmpty()) {
@@ -1520,6 +1701,7 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
                 }
             }
             is Action.UpdateTask -> {
+                shouldClearPending = true
                 val data = action.update_task
                 if (token.isNullOrBlank()) {
                     println("[$idx] update_task failed: missing Google token.")
@@ -1614,6 +1796,7 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
                 }
             }
             is Action.DeleteTask -> {
+                shouldClearPending = true
                 val data = action.delete_task
                 if (token.isNullOrBlank()) {
                     println("[$idx] delete_task failed: missing Google token.")
@@ -1710,6 +1893,10 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
                 }
             }
         }
+    }
+
+    if (!pendingSet && shouldClearPending) {
+        PlanStore.clearPending()
     }
 
     val refreshSignals =
@@ -1810,6 +1997,12 @@ fun buildAssistantMessageFromResponse(
             is Action.AddTask -> addTasks++
             is Action.UpdateTask -> updateTasks++
             is Action.DeleteTask -> deleteTasks++
+            is Action.AwaitUser -> { /* awaiting clarification */ }
+            is Action.ExternalAction -> { /* external actions require confirmation */ }
+            is Action.Remember -> { /* memory action */ }
+            is Action.ClearMemory -> { /* memory action */ }
+            is Action.WebSearch -> { /* web search */ }
+            is Action.FetchUrl -> { /* url fetch */ }
         }
     }
 
@@ -1827,10 +2020,10 @@ fun buildAssistantMessageFromResponse(
     if (deleteTasks > 0) parts += "removed $deleteTasks task${if (deleteTasks == 1) "" else "s"}"
 
     return if (parts.isEmpty()) {
-        "I suggest some next steps based on your request. Tell me if you want me to execute them."
+        "I can line up the next steps for you. Want me to go ahead?"
     } else {
         val list = parts.joinToString(", ")
-        "I have $list. Let me know if you want any changes."
+        "Done and dusted - I $list. Want me to tweak anything?"
     }
 }
 

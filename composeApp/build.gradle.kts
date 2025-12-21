@@ -11,6 +11,7 @@ plugins {
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.composeHotReload)
     alias(libs.plugins.ktlint)
+    alias(libs.plugins.sqldelight)
 
     id("org.jetbrains.kotlin.plugin.serialization") version "2.2.10"
 }
@@ -38,6 +39,7 @@ kotlin {
         androidMain.dependencies {
             implementation(compose.preview)
             implementation(libs.androidx.activity.compose)
+            implementation(libs.sqldelight.androidDriver)
         }
         commonMain.dependencies {
             implementation(compose.runtime)
@@ -50,6 +52,7 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.0")
 
             implementation(compose.material3)
+            implementation(libs.sqldelight.runtime)
 
             val voyagerVersion: String = "1.1.0-beta03"
             implementation("cafe.adriel.voyager:voyager-navigator:$voyagerVersion")
@@ -63,6 +66,7 @@ kotlin {
             // Networking and JSON for GoogleAuthDesktop
             implementation("io.ktor:ktor-client-core:3.0.1")
             implementation("io.ktor:ktor-client-cio:3.0.1")
+            implementation(libs.sqldelight.sqliteDriver)
         }
     }
 }
@@ -146,6 +150,14 @@ android {
 dependencies {
     implementation(libs.kotlinx.serialization.json)
     debugImplementation(compose.uiTooling)
+}
+
+sqldelight {
+    databases {
+        create("StrataDatabase") {
+            packageName.set("org.strata.persistence")
+        }
+    }
 }
 
 compose.desktop {

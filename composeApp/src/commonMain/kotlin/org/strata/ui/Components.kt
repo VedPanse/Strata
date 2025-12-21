@@ -62,6 +62,8 @@ import org.strata.ai.ChatAi
 import org.strata.ai.RefreshSignals
 import org.strata.ai.buildAssistantMessageFromResponse
 import org.strata.ai.handleGeminiResponse
+import org.strata.persistence.PlanStore
+import org.strata.persistence.MemoryStore
 
 @Composable
 fun StrataButton(
@@ -116,6 +118,38 @@ fun PromptInput(
     var sending by remember { mutableStateOf(false) }
     var banner by remember { mutableStateOf<String?>(null) }
     var bannerIsError by remember { mutableStateOf(false) }
+
+    fun localPendingResponse(pendingPlan: org.strata.persistence.PendingPlan?, userText: String): String? {
+        if (pendingPlan == null) return null
+        val normalized = userText.trim().lowercase()
+        if (normalized.isEmpty()) return null
+
+        val yesTokens =
+            setOf(
+                "yes", "y", "ok", "okay", "sure", "do it", "go ahead", "proceed",
+            )
+        val noTokens =
+            setOf(
+                "no", "n", "stop", "cancel", "don't", "do not", "never mind", "nevermind",
+            )
+
+        if (noTokens.contains(normalized)) {
+            org.strata.persistence.PlanStore.clearPending()
+            return "Okay, I won't proceed."
+        }
+
+        if (pendingPlan.status == "external_action" && yesTokens.contains(normalized)) {
+            org.strata.persistence.PlanStore.clearPending()
+            return "Got it. I'll proceed once the integration is connected."
+        }
+
+        if (pendingPlan.status == "await_user" && normalized in setOf("cancel", "never mind", "nevermind")) {
+            org.strata.persistence.PlanStore.clearPending()
+            return "No problem - tell me what you'd like to do instead."
+        }
+
+        return null
+    }
 
     // auto-hide banner after 5s
     LaunchedEffect(banner) {
@@ -190,59 +224,71 @@ fun PromptInput(
                                             query = TextFieldValue("")
                                             sending = true
                                             scope.launch {
-                                                val promptPayload = buildPromptPayload(chatHistory, textToSend)
-                                                val res = ChatAi.sendPrompt(promptPayload)
-                                                if (res.isSuccess) {
-                                                    val raw = res.getOrNull()
-                                                    val agentResult = handleGeminiResponse(raw)
-                                                    val summary = agentResult.summary
-                                                    when {
-                                                        summary.sentEmails > 0 && summary.failedEmails == 0 -> {
-                                                            query = TextFieldValue("")
-                                                            bannerIsError = false
-                                                            banner = "Sent email successfully"
-                                                        }
-                                                        summary.sentEmails == 0 && summary.failedEmails > 0 -> {
-                                                            bannerIsError = true
-                                                            banner = "Failed to send email"
-                                                        }
-                                                        summary.sentEmails > 0 && summary.failedEmails > 0 -> {
-                                                            bannerIsError = true
-                                                            banner = "Partially sent (${summary.sentEmails} sent, ${summary.failedEmails} failed)"
-                                                        }
-                                                        else -> {
-                                                            bannerIsError = false
-                                                            banner = null
-                                                        }
-                                                    }
-                                                    // Build and emit assistant reply messages for the transcript panel
-                                                    val assistantReplies =
-                                                        if (agentResult.userMessages.isNotEmpty()) {
-                                                            agentResult.userMessages
-                                                        } else {
-                                                            listOf(
-                                                                buildAssistantMessageFromResponse(
-                                                                    raw,
-                                                                    summary,
-                                                                    agentResult.userMessages,
-                                                                ),
-                                                            )
-                                                        }
+                                                val pendingPlan = PlanStore.getPending()
+                                                val localReply = localPendingResponse(pendingPlan, textToSend)
+                                                if (localReply != null) {
+                                                    bannerIsError = false
+                                                    banner = null
                                                     onAgentReply?.invoke(
                                                         textToSend,
-                                                        assistantReplies,
-                                                        agentResult.refreshSignals,
-                                                    )
-                                                } else {
-                                                    bannerIsError = true
-                                                    banner = "Gemini error: ${res.exceptionOrNull()?.message ?: "Unknown error"}"
-                                                    onAgentReply?.invoke(
-                                                        textToSend,
-                                                        listOf(
-                                                            "I couldn't process that due to an error: ${res.exceptionOrNull()?.message ?: "Unknown error"}.",
-                                                        ),
+                                                        listOf(localReply),
                                                         RefreshSignals(),
                                                     )
+                                                } else {
+                                                    val promptPayload = buildPromptPayload(chatHistory, textToSend, pendingPlan)
+                                                    val res = ChatAi.sendPrompt(promptPayload)
+                                                    if (res.isSuccess) {
+                                                        val raw = res.getOrNull()
+                                                        val agentResult = handleGeminiResponse(raw)
+                                                        val summary = agentResult.summary
+                                                        when {
+                                                            summary.sentEmails > 0 && summary.failedEmails == 0 -> {
+                                                                query = TextFieldValue("")
+                                                                bannerIsError = false
+                                                                banner = "Sent email successfully"
+                                                            }
+                                                            summary.sentEmails == 0 && summary.failedEmails > 0 -> {
+                                                                bannerIsError = true
+                                                                banner = "Failed to send email"
+                                                            }
+                                                            summary.sentEmails > 0 && summary.failedEmails > 0 -> {
+                                                                bannerIsError = true
+                                                                banner = "Partially sent (${summary.sentEmails} sent, ${summary.failedEmails} failed)"
+                                                            }
+                                                            else -> {
+                                                                bannerIsError = false
+                                                                banner = null
+                                                            }
+                                                        }
+                                                        // Build and emit assistant reply messages for the transcript panel
+                                                        val assistantReplies =
+                                                            if (agentResult.userMessages.isNotEmpty()) {
+                                                                agentResult.userMessages
+                                                            } else {
+                                                                listOf(
+                                                                    buildAssistantMessageFromResponse(
+                                                                        raw,
+                                                                        summary,
+                                                                        agentResult.userMessages,
+                                                                    ),
+                                                                )
+                                                            }
+                                                        onAgentReply?.invoke(
+                                                            textToSend,
+                                                            assistantReplies,
+                                                            agentResult.refreshSignals,
+                                                        )
+                                                    } else {
+                                                        bannerIsError = true
+                                                        banner = "OpenAI error: ${res.exceptionOrNull()?.message ?: "Unknown error"}"
+                                                        onAgentReply?.invoke(
+                                                            textToSend,
+                                                            listOf(
+                                                                "I couldn't process that due to an error: ${res.exceptionOrNull()?.message ?: "Unknown error"}.",
+                                                            ),
+                                                            RefreshSignals(),
+                                                        )
+                                                    }
                                                 }
                                                 sending = false
                                             }
@@ -328,14 +374,34 @@ fun PromptInput(
 private fun buildPromptPayload(
     history: List<Pair<String, String>>,
     latestUserText: String,
+    pendingPlan: org.strata.persistence.PendingPlan?,
 ): String {
     val localTimeContext = buildLocalTimeContext()
     val trimmed = history.filter { it.second.isNotBlank() }.takeLast(10)
+    val memories = MemoryStore.list()
 
     return buildString {
         append("Assistant context:\n")
         append(localTimeContext)
         append("\n\n")
+
+        if (memories.isNotEmpty()) {
+            append("Long-term memory:\n")
+            memories.forEach { memory ->
+                append("- ").append(memory).append('\n')
+            }
+            append("\n")
+        }
+
+        if (pendingPlan != null) {
+            append("Pending plan:\n")
+            append("Status: ").append(pendingPlan.status).append('\n')
+            append("Question: ").append(pendingPlan.question).append('\n')
+            pendingPlan.context?.let {
+                append("Context: ").append(it).append('\n')
+            }
+            append("\n")
+        }
 
         if (trimmed.isNotEmpty()) {
             val historyBlock =
