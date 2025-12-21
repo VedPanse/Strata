@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import org.strata.perception.DesktopOverlayState
 import org.strata.ui.ScreenOverlayPrompt
+import java.awt.Color
 
 fun main() {
     // Ensure macOS menu/title bar shows the branded name instead of the generated MainKt class name
@@ -38,10 +39,11 @@ fun main() {
                 transparent = true,
                 state =
                     rememberWindowState(
-                        size = DpSize(420.dp, 820.dp),
-                        position = WindowPosition.Aligned(Alignment.BottomEnd),
+                        size = DpSize(420.dp, 760.dp),
+                        position = WindowPosition.Aligned(Alignment.CenterEnd),
                     ),
             ) {
+                window.background = Color(0, 0, 0, 0)
                 ScreenOverlayPrompt(
                     onClose = {
                         DesktopOverlayState.visible.value = false

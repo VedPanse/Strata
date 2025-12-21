@@ -112,6 +112,8 @@ fun PromptInput(
     modifier: Modifier = Modifier,
     chatHistory: List<Pair<String, String>> = emptyList(),
     beforeSend: (suspend () -> Unit)? = null,
+    onUserSend: ((String) -> Unit)? = null,
+    onSendingState: ((Boolean) -> Unit)? = null,
     onAgentReply: ((user: String, assistantReplies: List<String>, refreshSignals: RefreshSignals) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
@@ -226,6 +228,8 @@ fun PromptInput(
                                         if (textToSend.isNotBlank()) {
                                             query = TextFieldValue("")
                                             sending = true
+                                            onUserSend?.invoke(textToSend)
+                                            onSendingState?.invoke(true)
                                             scope.launch {
                                                 val pendingPlan = PlanStore.getPending()
                                                 val localReply = localPendingResponse(pendingPlan, textToSend)
@@ -297,6 +301,7 @@ fun PromptInput(
                                                     }
                                                 }
                                                 sending = false
+                                                onSendingState?.invoke(false)
                                             }
                                         }
                                         true
@@ -413,6 +418,15 @@ private fun buildPromptPayload(
         if (screen != null) {
             append("Screen perception (latest capture):\n")
             append(ScreenPerceptionFormatter.formatForPrompt(screen))
+            append("\n\n")
+            append(
+                "When screen perception is provided, answer using what you can see on screen. " +
+                    "Do not use external_action for reading on-screen content; only use external_action " +
+                    "if the user explicitly asks to perform an external operation beyond the visible UI. " +
+                    "Do not ask repeated confirmation questions; if the user already answered, proceed or reply. " +
+                    "For requests like 'who is attending', list all visible names from the screen capture and " +
+                    "do not ask to check panels or confirm.\n",
+            )
             append("\n\n")
         }
 
