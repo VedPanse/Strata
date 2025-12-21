@@ -376,33 +376,37 @@ class Homescreen : Screen {
 
                     fun inferAbbrFromName(name: String): String {
                         // Prefer explicit parentheses like "London Heathrow (LHR)"
-                        val paren = Regex("\\(([A-Z]{3})\\)").find(name)?.groupValues?.getOrNull(1)
-                        if (!paren.isNullOrBlank()) return paren
-                        // Otherwise, pick the last standalone 3-letter uppercase token
-                        val token = Regex("\\b[A-Z]{3}\\b").findAll(name).lastOrNull()?.value
-                        return token ?: ""
+                        val paren = Regex("\\(([A-Z]{3})\\)", RegexOption.IGNORE_CASE)
+                            .find(name)
+                            ?.groupValues
+                            ?.getOrNull(1)
+                        if (!paren.isNullOrBlank()) return paren.uppercase()
+                        // Gemini returns abbreviations as the last word in the location string.
+                        val lastWord = name.trim().split(Regex("\\s+")).lastOrNull().orEmpty()
+                        val cleanedLast = lastWord.trim { !it.isLetter() }
+                        if (cleanedLast.length == 3 && cleanedLast.all { it.isLetter() }) {
+                            return cleanedLast.uppercase()
+                        }
+                        // Otherwise, pick the last standalone 3-letter token
+                        val token =
+                            Regex("\\b[A-Z]{3}\\b", RegexOption.IGNORE_CASE)
+                                .findAll(name)
+                                .lastOrNull()
+                                ?.value
+                        return token?.uppercase() ?: ""
                     }
 
-                    val knownAirports: List<Pair<String, String>> =
-                        listOf(
-                            "doha" to "DOH",
-                            "hamad" to "DOH",
-                            "san francisco" to "SFO",
-                            "sfo" to "SFO",
-                            "san francisco international" to "SFO",
-                            "mumbai" to "BOM",
-                            "bombay" to "BOM",
-                            "london" to "LHR",
-                            "heathrow" to "LHR",
-                            "san diego" to "SAN",
-                            "delhi" to "DEL",
-                            "new delhi" to "DEL",
-                        )
-
-                    fun inferAbbrFromKnown(name: String): String {
-                        val lower = name.lowercase()
-                        val hit = knownAirports.firstOrNull { (k, _) -> lower.contains(k) }
-                        return hit?.second ?: ""
+                    fun cleanAbbr(raw: String): String {
+                        val trimmed = raw.trim()
+                        if (trimmed.isBlank()) return ""
+                        val token =
+                            Regex("\\b[A-Z]{3}\\b", RegexOption.IGNORE_CASE)
+                                .findAll(trimmed)
+                                .lastOrNull()
+                                ?.value
+                        if (!token.isNullOrBlank()) return token.uppercase()
+                        val lettersOnly = trimmed.filter { it.isLetter() }
+                        return if (lettersOnly.length == 3) lettersOnly.uppercase() else ""
                     }
 
                     val mapped =
@@ -421,31 +425,27 @@ class Homescreen : Screen {
                                     else -> TicketStatus.ON_TIME
                                 }
                             val depNameInfer = inferAbbrFromName(t.departureName)
-                            val depKnownInfer =
-                                if (depNameInfer.isBlank()) inferAbbrFromKnown(t.departureName) else ""
+                            val depAbbrRaw = cleanAbbr(t.departureAbbr)
                             val depAbbr =
                                 when {
-                                    t.departureAbbr.isNotBlank() -> t.departureAbbr
+                                    depAbbrRaw.isNotBlank() -> depAbbrRaw
                                     depNameInfer.isNotBlank() -> depNameInfer
-                                    depKnownInfer.isNotBlank() -> depKnownInfer
                                     else -> ""
                                 }
                             val arrNameInfer = inferAbbrFromName(t.arrivalName)
-                            val arrKnownInfer =
-                                if (arrNameInfer.isBlank()) inferAbbrFromKnown(t.arrivalName) else ""
+                            val arrAbbrRaw = cleanAbbr(t.arrivalAbbr)
                             val arrAbbr =
                                 when {
-                                    t.arrivalAbbr.isNotBlank() -> t.arrivalAbbr
+                                    arrAbbrRaw.isNotBlank() -> arrAbbrRaw
                                     arrNameInfer.isNotBlank() -> arrNameInfer
-                                    arrKnownInfer.isNotBlank() -> arrKnownInfer
                                     else -> ""
                                 }
                             println(
                                 "[DEBUG_LOG][Homescreen] Mapping ticket: type=${t.type}, number=${t.number}, " +
                                     "dep='${t.departureName}' abbr='${t.departureAbbr}' -> " +
-                                    "inferredName='$depNameInfer', inferredKnown='$depKnownInfer', final='$depAbbr'; " +
+                                    "inferredName='$depNameInfer', final='$depAbbr'; " +
                                     "arr='${t.arrivalName}' abbr='${t.arrivalAbbr}' -> " +
-                                    "inferredName='$arrNameInfer', inferredKnown='$arrKnownInfer', final='$arrAbbr'",
+                                    "inferredName='$arrNameInfer', final='$arrAbbr'",
                             )
                             TicketUiModel(
                                 type = type,
@@ -1578,7 +1578,18 @@ private fun parseLocation(location: String?): Pair<String, String> {
     return name to abbr
 }
 
-private fun extractAirportAbbr(text: String): String = Regex("\\b[A-Z]{3}\\b").findAll(text).lastOrNull()?.value ?: ""
+private fun extractAirportAbbr(text: String): String {
+    val token =
+        Regex("\\b[A-Z]{3}\\b", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.value
+    if (!token.isNullOrBlank()) return token.uppercase()
+    val lastWord = text.trim().split(Regex("\\s+")).lastOrNull().orEmpty()
+    val cleanedLast = lastWord.trim { !it.isLetter() }
+    return if (cleanedLast.length == 3 && cleanedLast.all { it.isLetter() }) {
+        cleanedLast.uppercase()
+    } else {
+        ""
+    }
+}
 
 private fun ticketTypeLabel(type: TicketTypes): String =
     when (type) {
