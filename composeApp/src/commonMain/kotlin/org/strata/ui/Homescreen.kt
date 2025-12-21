@@ -84,6 +84,7 @@ import org.strata.ai.RefreshSignals
 import org.strata.ai.SummaryAi
 import org.strata.ai.macro.MailPreviewOverlay
 import org.strata.ai.LlmHealth
+import org.strata.perception.ScreenPerception
 import org.strata.auth.CalendarApi
 import org.strata.auth.CalendarEvent
 import org.strata.auth.GmailApi
@@ -624,20 +625,44 @@ class Homescreen : Screen {
                         .padding(end = HomeDimens.ContentEndPadding, bottom = 20.dp)
                         .zIndex(9_999f),
             ) {
-                PromptInput(
-                    fullWidth = false,
-                    contentAlignment = Alignment.CenterEnd,
-                    chatHistory = messages.map { it.role to it.text },
-                    onAgentReply = { user, assistantReplies, refreshSignals ->
-                        messages.add(ChatMessage("user", user))
-                        assistantReplies.forEach { reply ->
-                            if (reply.isNotBlank()) {
-                                messages.add(ChatMessage("assistant", reply))
+                val scope = rememberCoroutineScope()
+                var overlayActive by remember { mutableStateOf(ScreenPerception.isOverlayActive()) }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StrataButton(
+                        text = if (overlayActive) "Stop screen" else "Record screen",
+                        onClick = {
+                            if (overlayActive) {
+                                ScreenPerception.stopOverlay()
+                                ScreenPerception.stopStream()
+                                overlayActive = false
+                            } else {
+                                ScreenPerception.startOverlay()
+                                overlayActive = true
+                                ScreenPerception.startStream()
+                                scope.launch { ScreenPerception.record() }
                             }
-                        }
-                        applyRefreshSignals(refreshSignals)
-                    },
-                )
+                        },
+                    )
+
+                    PromptInput(
+                        fullWidth = false,
+                        contentAlignment = Alignment.CenterEnd,
+                        chatHistory = messages.map { it.role to it.text },
+                        onAgentReply = { user, assistantReplies, refreshSignals ->
+                            messages.add(ChatMessage("user", user))
+                            assistantReplies.forEach { reply ->
+                                if (reply.isNotBlank()) {
+                                    messages.add(ChatMessage("assistant", reply))
+                                }
+                            }
+                            applyRefreshSignals(refreshSignals)
+                        },
+                    )
+                }
             }
         }
     }

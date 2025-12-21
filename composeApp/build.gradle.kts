@@ -40,6 +40,8 @@ kotlin {
             implementation(compose.preview)
             implementation(libs.androidx.activity.compose)
             implementation(libs.sqldelight.androidDriver)
+            implementation("androidx.lifecycle:lifecycle-service:2.7.0")
+            implementation("com.google.mlkit:text-recognition:16.0.0")
         }
         commonMain.dependencies {
             implementation(compose.runtime)
@@ -67,6 +69,7 @@ kotlin {
             implementation("io.ktor:ktor-client-core:3.0.1")
             implementation("io.ktor:ktor-client-cio:3.0.1")
             implementation(libs.sqldelight.sqliteDriver)
+            implementation("net.sourceforge.tess4j:tess4j:5.8.0")
         }
     }
 }

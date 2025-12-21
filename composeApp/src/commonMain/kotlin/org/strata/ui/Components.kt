@@ -62,6 +62,8 @@ import org.strata.ai.ChatAi
 import org.strata.ai.RefreshSignals
 import org.strata.ai.buildAssistantMessageFromResponse
 import org.strata.ai.handleGeminiResponse
+import org.strata.perception.ScreenPerception
+import org.strata.perception.ScreenPerceptionFormatter
 import org.strata.persistence.PlanStore
 import org.strata.persistence.MemoryStore
 
@@ -109,6 +111,7 @@ fun PromptInput(
     contentAlignment: Alignment = Alignment.Center,
     modifier: Modifier = Modifier,
     chatHistory: List<Pair<String, String>> = emptyList(),
+    beforeSend: (suspend () -> Unit)? = null,
     onAgentReply: ((user: String, assistantReplies: List<String>, refreshSignals: RefreshSignals) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
@@ -235,6 +238,9 @@ fun PromptInput(
                                                         RefreshSignals(),
                                                     )
                                                 } else {
+                                                    if (beforeSend != null) {
+                                                        runCatching { beforeSend() }
+                                                    }
                                                     val promptPayload = buildPromptPayload(chatHistory, textToSend, pendingPlan)
                                                     val res = ChatAi.sendPrompt(promptPayload)
                                                     if (res.isSuccess) {
@@ -379,6 +385,7 @@ private fun buildPromptPayload(
     val localTimeContext = buildLocalTimeContext()
     val trimmed = history.filter { it.second.isNotBlank() }.takeLast(10)
     val memories = MemoryStore.list()
+    val screen = ScreenPerception.latest()
 
     return buildString {
         append("Assistant context:\n")
@@ -401,6 +408,12 @@ private fun buildPromptPayload(
                 append("Context: ").append(it).append('\n')
             }
             append("\n")
+        }
+
+        if (screen != null) {
+            append("Screen perception (latest capture):\n")
+            append(ScreenPerceptionFormatter.formatForPrompt(screen))
+            append("\n\n")
         }
 
         if (trimmed.isNotEmpty()) {
