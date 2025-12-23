@@ -15,8 +15,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.strata.ai.GeminiSupport
 import org.strata.ai.JsonMapEncoder
-import org.strata.ai.OpenAiSupport
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.util.Base64
@@ -26,26 +26,30 @@ import javax.imageio.ImageWriter
 import javax.imageio.stream.MemoryCacheImageOutputStream
 
 internal object ScreenVisionAi {
-    private val http = HttpClient(CIO)
+    private val http =
+        HttpClient(CIO) {
+            expectSuccess = false
+        }
     private val json = Json { ignoreUnknownKeys = true }
 
+    private const val MODEL = "gemini-2.5-flash"
+    private const val BASE_URL =
+        "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent"
     private const val MAX_DIMENSION = 1280
     private const val JPEG_QUALITY = 0.72f
 
     suspend fun summarize(image: BufferedImage): Result<String> =
         runCatching {
-            val apiKey = OpenAiSupport.requireApiKey()
+            val apiKey = GeminiSupport.requireApiKey()
             val payload =
                 mapOf(
-                    "model" to "gpt-4o-mini",
-                    "messages" to
+                    "contents" to
                         listOf(
                             mapOf(
                                 "role" to "user",
-                                "content" to
+                                "parts" to
                                     listOf(
                                         mapOf(
-                                            "type" to "text",
                                             "text" to
                                                 "Summarize the visible screen. Identify the app, key UI elements " +
                                                 "(buttons, fields, links), and the main content. Keep it concise.",
@@ -54,29 +58,35 @@ internal object ScreenVisionAi {
                                     ),
                             ),
                         ),
-                    "temperature" to 0.2,
-                    "max_tokens" to 256,
+                    "generationConfig" to
+                        mapOf(
+                            "temperature" to 0.2,
+                            "maxOutputTokens" to 256,
+                        ),
                 )
             val body = JsonMapEncoder.encodeToString(payload)
-            val url = "https://api.openai.com/v1/chat/completions"
             val response =
-                http.post(url) {
+                http.post("$BASE_URL?key=$apiKey") {
                     contentType(ContentType.Application.Json)
-                    headers.append("Authorization", "Bearer $apiKey")
                     setBody(body)
                 }
+            val status = response.status.value
             val raw = response.bodyAsText()
-            extractText(raw) ?: error("Empty response from OpenAI Vision")
+            if (status !in 200..299) {
+                val message = GeminiSupport.extractErrorMessage(json, raw) ?: raw.take(1_000)
+                error("Gemini HTTP $status: $message")
+            }
+            extractText(raw) ?: error("Empty response from Gemini Vision")
         }
 
     private fun buildInlineImagePart(image: BufferedImage): Map<String, Any> {
         val scaled = downscale(image, MAX_DIMENSION)
         val jpegBytes = encodeJpeg(scaled, JPEG_QUALITY)
         return mapOf(
-            "type" to "image_url",
-            "image_url" to
+            "inline_data" to
                 mapOf(
-                    "url" to "data:image/jpeg;base64,${Base64.getEncoder().encodeToString(jpegBytes)}",
+                    "mime_type" to "image/jpeg",
+                    "data" to Base64.getEncoder().encodeToString(jpegBytes),
                 ),
         )
     }
@@ -119,9 +129,10 @@ internal object ScreenVisionAi {
     private fun extractText(raw: String): String? =
         runCatching {
             val root = json.parseToJsonElement(raw).jsonObject
-            val choices = root["choices"]?.jsonArray ?: return null
-            val first = choices.firstOrNull()?.jsonObject ?: return null
-            val message = first["message"]?.jsonObject ?: return null
-            message["content"]?.jsonPrimitive?.content
+            val candidates = root["candidates"]?.jsonArray ?: return null
+            val first = candidates.firstOrNull()?.jsonObject ?: return null
+            val content = first["content"]?.jsonObject ?: return null
+            val parts = content["parts"]?.jsonArray ?: return null
+            parts.firstOrNull()?.jsonObject?.get("text")?.jsonPrimitive?.content
         }.getOrNull()
 }

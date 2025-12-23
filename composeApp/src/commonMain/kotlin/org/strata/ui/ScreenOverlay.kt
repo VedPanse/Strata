@@ -204,6 +204,8 @@ fun ScreenOverlayPrompt(
                         .padding(bottom = 2.dp),
                 chatHistory = messages.toList(),
                 beforeSend = onBeforeSend,
+                includePendingPlan = false,
+                clearPendingPlanOnSend = true,
                 onUserSend = { text ->
                     messages.add("user" to text)
                     isSending = true

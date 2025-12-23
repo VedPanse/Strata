@@ -33,6 +33,10 @@ import org.strata.auth.TaskItem
 import org.strata.auth.TasksApi
 import org.strata.ai.WebFetchApi
 import org.strata.ai.WebSearchResult
+import org.strata.platform.AppLauncher
+import org.strata.platform.UiAutomation
+import org.strata.platform.UrlHandler
+import org.strata.perception.ScreenPerception
 import org.strata.persistence.MemoryStore
 import org.strata.persistence.PlanStore
 import kotlin.math.abs
@@ -59,6 +63,19 @@ object ActionSerializer : kotlinx.serialization.json.JsonContentPolymorphicSeria
             "delete_task" in element.jsonObject -> Action.DeleteTask.serializer()
             "await_user" in element.jsonObject -> Action.AwaitUser.serializer()
             "external_action" in element.jsonObject -> Action.ExternalAction.serializer()
+            "tap" in element.jsonObject -> Action.Tap.serializer()
+            "move_cursor" in element.jsonObject -> Action.MoveCursor.serializer()
+            "click" in element.jsonObject -> Action.Click.serializer()
+            "mouse_down" in element.jsonObject -> Action.MouseDown.serializer()
+            "mouse_up" in element.jsonObject -> Action.MouseUp.serializer()
+            "drag" in element.jsonObject -> Action.Drag.serializer()
+            "type_text" in element.jsonObject -> Action.TypeText.serializer()
+            "scroll" in element.jsonObject -> Action.Scroll.serializer()
+            "open_app" in element.jsonObject -> Action.OpenApp.serializer()
+            "open_url" in element.jsonObject -> Action.OpenUrl.serializer()
+            "key_combo" in element.jsonObject -> Action.KeyCombo.serializer()
+            "press_key" in element.jsonObject -> Action.PressKey.serializer()
+            "done" in element.jsonObject -> Action.Done.serializer()
             "remember" in element.jsonObject -> Action.Remember.serializer()
             "clear_memory" in element.jsonObject -> Action.ClearMemory.serializer()
             "web_search" in element.jsonObject -> Action.WebSearch.serializer()
@@ -201,6 +218,32 @@ sealed class Action {
     @Serializable data class AwaitUser(val await_user: AwaitUserData) : Action()
 
     @Serializable data class ExternalAction(val external_action: ExternalActionData) : Action()
+
+    @Serializable data class Tap(val tap: TapData) : Action()
+
+    @Serializable data class MoveCursor(val move_cursor: MoveCursorData) : Action()
+
+    @Serializable data class Click(val click: ClickData) : Action()
+
+    @Serializable data class MouseDown(val mouse_down: MouseDownData) : Action()
+
+    @Serializable data class MouseUp(val mouse_up: MouseUpData) : Action()
+
+    @Serializable data class Drag(val drag: DragData) : Action()
+
+    @Serializable data class TypeText(val type_text: TypeTextData) : Action()
+
+    @Serializable data class Scroll(val scroll: ScrollData) : Action()
+
+    @Serializable data class OpenApp(val open_app: OpenAppData) : Action()
+
+    @Serializable data class OpenUrl(val open_url: OpenUrlData) : Action()
+
+    @Serializable data class KeyCombo(val key_combo: KeyComboData) : Action()
+
+    @Serializable data class PressKey(val press_key: PressKeyData) : Action()
+
+    @Serializable data class Done(val done: DoneData) : Action()
 
     @Serializable data class Remember(val remember: RememberData) : Action()
 
@@ -351,6 +394,99 @@ data class ExternalActionData(
 )
 
 @Serializable
+data class TapData(
+    val x: Int,
+    val y: Int,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class MoveCursorData(
+    val x: Int,
+    val y: Int,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class ClickData(
+    val x: Int,
+    val y: Int,
+    val button: String? = null,
+    val count: Int? = null,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class MouseDownData(
+    val x: Int,
+    val y: Int,
+    val button: String? = null,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class MouseUpData(
+    val x: Int,
+    val y: Int,
+    val button: String? = null,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class DragData(
+    val start_x: Int,
+    val start_y: Int,
+    val end_x: Int,
+    val end_y: Int,
+    val duration_ms: Int? = null,
+    val button: String? = null,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class TypeTextData(
+    val text: String,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class ScrollData(
+    val dx: Int = 0,
+    val dy: Int = 0,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class OpenAppData(
+    val app_name: String? = null,
+    val package_name: String? = null,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class OpenUrlData(
+    val url: String,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class KeyComboData(
+    val keys: List<String>,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class PressKeyData(
+    val key: String,
+    val assumptions: String? = null,
+)
+
+@Serializable
+data class DoneData(
+    val summary: String? = null,
+)
+
+@Serializable
 data class RememberData(
     val content: String,
     val assumptions: String? = null,
@@ -471,6 +607,7 @@ data class GeminiRunResult(
     val summary: ExecutionSummary = ExecutionSummary(),
     val userMessages: List<String> = emptyList(),
     val refreshSignals: RefreshSignals = RefreshSignals(),
+    val actions: List<Action> = emptyList(),
 )
 
 data class RewriteResult(val subject: String, val body: String)
@@ -515,7 +652,10 @@ fun handleRewrite(response: String?): RewriteResult? {
     }
 }
 
-suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
+suspend fun handleGeminiResponse(
+    response: String?,
+    maxActions: Int? = null,
+): GeminiRunResult {
     println("[Gemini raw]: ${response ?: "null"}")
 
     if (response.isNullOrBlank()) {
@@ -544,6 +684,13 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
         println("[Gemini] Parsed 0 actions.")
         return GeminiRunResult()
     }
+
+    val cappedActions =
+        if (maxActions != null && maxActions > 0) {
+            actions.take(maxActions)
+        } else {
+            actions
+        }
 
     println("[Gemini] Parsed ${actions.size} action(s). Executing…")
 
@@ -941,7 +1088,7 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
     var shouldClearPending = false
     val pendingEncoder = Json { encodeDefaults = true }
 
-    actions.forEachIndexed { idx, action ->
+    cappedActions.forEachIndexed { idx, action ->
         if (pendingSet) return@forEachIndexed
         when (action) {
             is Action.Remember -> {
@@ -1019,6 +1166,167 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
                 userMessages += question
                 suppressNextUserMsg = true
                 pendingSet = true
+            }
+            is Action.Tap -> {
+                val data = action.tap
+                if (isSensitiveTap(data.x, data.y)) {
+                    userMessages += "This looks like a delete or purchase action. Say 'confirm' if you want me to proceed."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                UiAutomation.tap(data.x, data.y).onFailure { err ->
+                    userMessages += "I couldn't tap that spot (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.MoveCursor -> {
+                val data = action.move_cursor
+                UiAutomation.moveCursor(data.x, data.y).onFailure { err ->
+                    userMessages += "I couldn't move the cursor (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.Click -> {
+                val data = action.click
+                val count = data.count?.coerceIn(1, 3) ?: 1
+                if (isSensitiveTap(data.x, data.y)) {
+                    userMessages += "This looks like a delete or purchase action. Say 'confirm' if you want me to proceed."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                UiAutomation.click(data.x, data.y, data.button, count).onFailure { err ->
+                    userMessages += "I couldn't click there (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.MouseDown -> {
+                val data = action.mouse_down
+                UiAutomation.mouseDown(data.x, data.y, data.button).onFailure { err ->
+                    userMessages += "I couldn't press the mouse button (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.MouseUp -> {
+                val data = action.mouse_up
+                UiAutomation.mouseUp(data.x, data.y, data.button).onFailure { err ->
+                    userMessages += "I couldn't release the mouse button (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.Drag -> {
+                val data = action.drag
+                UiAutomation.drag(
+                    startX = data.start_x,
+                    startY = data.start_y,
+                    endX = data.end_x,
+                    endY = data.end_y,
+                    durationMs = data.duration_ms,
+                    button = data.button,
+                ).onFailure { err ->
+                    userMessages += "I couldn't drag that (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.TypeText -> {
+                val text = action.type_text.text
+                if (isSensitiveText(text)) {
+                    userMessages += "That text looks like a delete or purchase action. Say 'confirm' if you want me to proceed."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                UiAutomation.typeText(text).onFailure { err ->
+                    userMessages += "I couldn't type that (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.Scroll -> {
+                val data = action.scroll
+                UiAutomation.scroll(data.dx, data.dy).onFailure { err ->
+                    userMessages += "I couldn't scroll (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.OpenApp -> {
+                val data = action.open_app
+                val appName = data.app_name?.trim().orEmpty()
+                val packageName = data.package_name?.trim().orEmpty()
+                println("[$idx] open_app → appName=\"$appName\" packageName=\"$packageName\"")
+                if (appName.isBlank() && packageName.isBlank()) {
+                    userMessages += "I need the app name to open it."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                val openResult =
+                    AppLauncher.openApp(appName.takeIf { it.isNotBlank() }, packageName.takeIf { it.isNotBlank() })
+                if (openResult.isFailure) {
+                    println("[$idx] open_app failed → ${openResult.exceptionOrNull()?.message}")
+                }
+                val opened = openResult.isSuccess
+                if (!opened) {
+                    userMessages += "I couldn't open that app."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                val snap =
+                    runCatching { ScreenPerception.record(forceVision = true).getOrNull() }.getOrNull()
+                val verified = snap?.let { doesScreenShowApp(it, appName) } ?: false
+                val summarySnippet = snap?.visionSummary?.replace("\n", " ")?.take(200).orEmpty()
+                println(
+                    "[$idx] open_app verification → verified=$verified " +
+                        "digest=${snap?.frameDigest.orEmpty()} " +
+                        "summary=\"$summarySnippet\"",
+                )
+                if (!verified) {
+                    userMessages += "I tried to open $appName, but I couldn’t verify it on screen. Bring it to the front?"
+                    suppressNextUserMsg = true
+                } else {
+                    userMessages += "Opened $appName."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.OpenUrl -> {
+                val data = action.open_url
+                val url = data.url.trim()
+                if (url.isBlank()) {
+                    userMessages += "I need a URL to open."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                UrlHandler.openUrl(url).onFailure { err ->
+                    userMessages += "I couldn't open that URL (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.KeyCombo -> {
+                val data = action.key_combo
+                if (data.keys.isEmpty()) {
+                    userMessages += "I need the keys to press."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                UiAutomation.keyCombo(data.keys).onFailure { err ->
+                    userMessages += "I couldn't press that shortcut (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.PressKey -> {
+                val data = action.press_key
+                if (data.key.isBlank()) {
+                    userMessages += "I need the key to press."
+                    suppressNextUserMsg = true
+                    return@forEachIndexed
+                }
+                UiAutomation.pressKey(data.key).onFailure { err ->
+                    userMessages += "I couldn't press that key (${err.message})."
+                    suppressNextUserMsg = true
+                }
+            }
+            is Action.Done -> {
+                val note = action.done.summary?.trim().orEmpty()
+                if (note.isNotBlank()) {
+                    userMessages += note
+                    suppressNextUserMsg = true
+                }
             }
             is Action.SendEmail -> {
                 shouldClearPending = true
@@ -1911,7 +2219,38 @@ suspend fun handleGeminiResponse(response: String?): GeminiRunResult {
         summary = ExecutionSummary(sentEmails = sent, failedEmails = failed),
         userMessages = userMessages,
         refreshSignals = refreshSignals,
+        actions = cappedActions,
     )
+}
+
+private fun isSensitiveText(text: String): Boolean {
+    val lowered = text.lowercase()
+    return lowered.contains("delete") || lowered.contains("purchase")
+}
+
+private fun isSensitiveTap(
+    x: Int,
+    y: Int,
+): Boolean {
+    val screen = ScreenPerception.latest() ?: return false
+    val hit =
+        screen.uiElements.firstOrNull { element ->
+            x in element.bounds.left..element.bounds.right &&
+                y in element.bounds.top..element.bounds.bottom
+        }
+    val label = hit?.label?.lowercase().orEmpty()
+    return label.contains("delete") || label.contains("purchase")
+}
+
+private fun doesScreenShowApp(
+    snap: org.strata.perception.ScreenPerceptionResult,
+    appName: String,
+): Boolean {
+    if (appName.isBlank()) return false
+    val needle = appName.lowercase()
+    val summary = snap.visionSummary?.lowercase().orEmpty()
+    if (summary.contains(needle)) return true
+    return snap.ocrBlocks.any { block -> block.text.lowercase().contains(needle) }
 }
 
 // ───────────────────── JSON Array Extraction ───────────────────── //
@@ -1999,6 +2338,19 @@ fun buildAssistantMessageFromResponse(
             is Action.DeleteTask -> deleteTasks++
             is Action.AwaitUser -> { /* awaiting clarification */ }
             is Action.ExternalAction -> { /* external actions require confirmation */ }
+            is Action.Tap -> { /* UI automation */ }
+            is Action.MoveCursor -> { /* UI automation */ }
+            is Action.Click -> { /* UI automation */ }
+            is Action.MouseDown -> { /* UI automation */ }
+            is Action.MouseUp -> { /* UI automation */ }
+            is Action.Drag -> { /* UI automation */ }
+            is Action.TypeText -> { /* UI automation */ }
+            is Action.Scroll -> { /* UI automation */ }
+            is Action.OpenApp -> { /* app launch */ }
+            is Action.OpenUrl -> { /* open url */ }
+            is Action.KeyCombo -> { /* keyboard shortcut */ }
+            is Action.PressKey -> { /* keyboard shortcut */ }
+            is Action.Done -> { /* completion */ }
             is Action.Remember -> { /* memory action */ }
             is Action.ClearMemory -> { /* memory action */ }
             is Action.WebSearch -> { /* web search */ }

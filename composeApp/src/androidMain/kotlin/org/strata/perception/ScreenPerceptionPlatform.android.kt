@@ -15,6 +15,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.provider.Settings
 import android.util.DisplayMetrics
+import android.util.Base64
 import android.view.WindowManager
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -24,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.strata.platform.AppContext
+import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
 
 actual object ScreenPerceptionPlatform {
@@ -40,6 +42,9 @@ actual object ScreenPerceptionPlatform {
             val bitmap = captureBitmap(context, projection)
                 ?: error("Failed to capture screen.")
 
+            val screenWidth = bitmap.width
+            val screenHeight = bitmap.height
+            val imageBase64 = encodeJpegBase64(bitmap)
             val ocrBlocks = recognizeText(bitmap)
             val accessibilitySnapshot = AccessibilitySnapshotStore.get()
             val uiElements = accessibilitySnapshot?.uiElements ?: emptyList()
@@ -54,6 +59,9 @@ actual object ScreenPerceptionPlatform {
                 visionSummary = null,
                 frameDigest = digest,
                 visionUpdatedAtMillis = ScreenPerceptionStreamState.lastVisionAtMillis,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight,
+                imageBase64Jpeg = imageBase64,
             )
         }
 
@@ -178,6 +186,27 @@ actual object ScreenPerceptionPlatform {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
+    }
+
+    private fun encodeJpegBase64(bitmap: Bitmap): String {
+        val scaled = downscale(bitmap, 1280)
+        val output = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, 72, output)
+        return Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+    }
+
+    private fun downscale(
+        bitmap: Bitmap,
+        maxDimension: Int,
+    ): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val maxSide = maxOf(width, height)
+        if (maxSide <= maxDimension) return bitmap
+        val scale = maxDimension.toFloat() / maxSide.toFloat()
+        val targetW = (width * scale).toInt().coerceAtLeast(1)
+        val targetH = (height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
     }
 }
 

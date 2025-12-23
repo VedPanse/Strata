@@ -6,14 +6,12 @@ package org.strata.ai
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
-import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonArray
@@ -29,28 +27,12 @@ actual object TicketsAi {
     private val http = HttpClient(CIO)
     private val json = Json { ignoreUnknownKeys = true }
 
-    @Serializable
-    private data class ChatMessage(val role: String, val content: String)
-
-    @Serializable
-    private data class ChatRequest(
-        val model: String,
-        val messages: List<ChatMessage>,
-        val temperature: Double = 0.2,
-    )
-
-    @Serializable
-    private data class ChatChoice(val message: ChatMessage? = null)
-
-    @Serializable
-    private data class ChatResponse(val choices: List<ChatChoice> = emptyList())
-
     actual suspend fun extractTickets(
         unreadMails: List<GmailMail>,
         todayEvents: List<CalendarEvent>,
     ): Result<List<ExtractedTicket>> {
         LlmHealth.requestBlockReason()?.let { return Result.failure(IllegalStateException(it)) }
-        val apiKey = runCatching { OpenAiSupport.requireApiKey() }.getOrElse { return Result.failure(it) }
+        val apiKey = runCatching { GeminiSupport.requireApiKey() }.getOrElse { return Result.failure(it) }
 
         val prompt = buildPrompt(unreadMails, todayEvents)
         val cacheKey = "tickets:$prompt"
@@ -58,30 +40,35 @@ actual object TicketsAi {
             val items = runCatching { parseTicketsJson(cached) }.getOrNull()
             if (items != null) return Result.success(items)
         }
-        val url = "https://api.openai.com/v1/chat/completions"
+        val url =
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
         val requestBody =
-            ChatRequest(
-                model = "gpt-4o-mini",
-                messages = listOf(ChatMessage(role = "user", content = prompt)),
+            mapOf(
+                "contents" to
+                    listOf(
+                        mapOf(
+                            "parts" to listOf(mapOf("text" to prompt)),
+                        ),
+                    ),
+                "generationConfig" to mapOf("temperature" to 0.2),
             )
         val result =
             runCatching {
                 val response =
                     http.post(url) {
-                        header("Authorization", "Bearer $apiKey")
                         contentType(ContentType.Application.Json)
-                        setBody(json.encodeToString(ChatRequest.serializer(), requestBody))
+                        setBody(JsonMapEncoder.encodeToString(requestBody))
                     }
                 val status = response.status.value
                 val body = response.bodyAsText()
                 if (status !in 200..299) {
-                    val message = OpenAiSupport.extractErrorMessage(json, body) ?: body.take(1_000)
-                    error("OpenAI HTTP $status: $message")
+                    val message = GeminiSupport.extractErrorMessage(json, body) ?: body.take(1_000)
+                    error("Gemini HTTP $status: $message")
                 }
                 val text = extractText(body)
-                println("[DEBUG_LOG][TicketsAi] OpenAI raw text (truncated): ${text.take(500)}")
+                println("[DEBUG_LOG][TicketsAi] Gemini raw text (truncated): ${text.take(500)}")
                 val items = parseTicketsJson(text)
-                println("[DEBUG_LOG][TicketsAi] Parsed ${items.size} ticket item(s) from OpenAI response")
+                println("[DEBUG_LOG][TicketsAi] Parsed ${items.size} ticket item(s) from Gemini response")
                 text to items
             }
         result.onSuccess { (text, _) ->
@@ -94,16 +81,13 @@ actual object TicketsAi {
     }
 
     private fun extractText(body: String): String {
-        // Try to parse structured, else fallback to best-effort
         return runCatching {
-            val parsed = json.decodeFromString(ChatResponse.serializer(), body)
-            parsed.choices.firstOrNull()?.message?.content?.takeIf { !it.isNullOrBlank() }
-        }.getOrNull() ?: run {
-            // fallback parse
             val root = json.parseToJsonElement(body).jsonObject
-            val choices = root["choices"] as? JsonArray
-            choices?.firstOrNull()?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.content
-        } ?: throw IllegalStateException("Empty response from OpenAI")
+            val candidates = root["candidates"]?.jsonArray ?: return@runCatching null
+            val content = candidates.firstOrNull()?.jsonObject?.get("content")?.jsonObject ?: return@runCatching null
+            val parts = content["parts"]?.jsonArray ?: return@runCatching null
+            parts.firstOrNull()?.jsonObject?.get("text")?.jsonPrimitive?.content
+        }.getOrNull() ?: throw IllegalStateException("Empty response from Gemini")
     }
 
     private fun parseTicketsJson(text: String): List<ExtractedTicket> {

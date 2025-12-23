@@ -11,7 +11,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 
 /**
- * JVM-only helpers for Gemini configuration and error parsing.
+ * Android helpers for Gemini configuration and error parsing.
  */
 internal object GeminiSupport {
     private val envFileCandidates =
@@ -22,44 +22,31 @@ internal object GeminiSupport {
             "local.properties",
         )
 
-    /**
-     * Reads a configuration value from the environment or local env files.
-     */
     fun readEnv(key: String): String? {
         System.getenv(key)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
-        var cursor: File? = File(".").absoluteFile
-        repeat(6) {
-            envFileCandidates.forEach { path ->
-                val file = File(cursor, path)
-                if (!file.exists()) return@forEach
-                val map =
-                    file.readLines()
-                        .asSequence()
-                        .map(String::trim)
-                        .filter { it.isNotEmpty() && !it.startsWith('#') }
-                        .mapNotNull { line ->
-                            val idx = line.indexOf('=')
-                            if (idx <= 0) return@mapNotNull null
-                            line.substring(0, idx) to line.substring(idx + 1)
-                        }
-                        .toMap()
-                map[key]?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
-            }
-            cursor = cursor?.parentFile
+        envFileCandidates.forEach { path ->
+            val file = File(path)
+            if (!file.exists()) return@forEach
+            val map =
+                file.readLines()
+                    .asSequence()
+                    .map(String::trim)
+                    .filter { it.isNotEmpty() && !it.startsWith('#') }
+                    .mapNotNull { line ->
+                        val idx = line.indexOf('=')
+                        if (idx <= 0) return@mapNotNull null
+                        line.substring(0, idx) to line.substring(idx + 1)
+                    }
+                    .toMap()
+            map[key]?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
         }
         return null
     }
 
-    /**
-     * Returns a required API key or throws if it is missing.
-     */
     fun requireApiKey(): String =
         readEnv("GOOGLE_GEMINI_API_KEY")
             ?: throw IllegalStateException("Missing GOOGLE_GEMINI_API_KEY")
 
-    /**
-     * Extracts a structured Gemini error message, if available.
-     */
     fun extractErrorMessage(
         json: Json,
         body: String,

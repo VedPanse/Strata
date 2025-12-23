@@ -58,8 +58,10 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.offsetAt
 import kotlinx.datetime.toLocalDateTime
+import org.strata.ai.Action
 import org.strata.ai.ChatAi
 import org.strata.ai.RefreshSignals
+import org.strata.ai.ScreenAttachment
 import org.strata.ai.buildAssistantMessageFromResponse
 import org.strata.ai.handleGeminiResponse
 import org.strata.perception.ScreenPerception
@@ -114,6 +116,8 @@ fun PromptInput(
     beforeSend: (suspend () -> Unit)? = null,
     onUserSend: ((String) -> Unit)? = null,
     onSendingState: ((Boolean) -> Unit)? = null,
+    includePendingPlan: Boolean = true,
+    clearPendingPlanOnSend: Boolean = false,
     onAgentReply: ((user: String, assistantReplies: List<String>, refreshSignals: RefreshSignals) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
@@ -231,8 +235,16 @@ fun PromptInput(
                                             onUserSend?.invoke(textToSend)
                                             onSendingState?.invoke(true)
                                             scope.launch {
-                                                val pendingPlan = PlanStore.getPending()
-                                                val localReply = localPendingResponse(pendingPlan, textToSend)
+                                                if (clearPendingPlanOnSend) {
+                                                    PlanStore.clearPending()
+                                                }
+                                                val pendingPlan = if (includePendingPlan) PlanStore.getPending() else null
+                                                val localReply =
+                                                    if (includePendingPlan) {
+                                                        localPendingResponse(pendingPlan, textToSend)
+                                                    } else {
+                                                        null
+                                                    }
                                                 if (localReply != null) {
                                                     bannerIsError = false
                                                     banner = null
@@ -246,58 +258,110 @@ fun PromptInput(
                                                         runCatching { beforeSend() }
                                                     }
                                                     val promptPayload = buildPromptPayload(chatHistory, textToSend, pendingPlan)
-                                                    val res = ChatAi.sendPrompt(promptPayload)
-                                                    if (res.isSuccess) {
-                                                        val raw = res.getOrNull()
-                                                        val agentResult = handleGeminiResponse(raw)
-                                                        val summary = agentResult.summary
-                                                        when {
-                                                            summary.sentEmails > 0 && summary.failedEmails == 0 -> {
-                                                                query = TextFieldValue("")
-                                                                bannerIsError = false
-                                                                banner = "Sent email successfully"
-                                                            }
-                                                            summary.sentEmails == 0 && summary.failedEmails > 0 -> {
+                                                    val screen = ScreenPerception.latest()
+                                                    val hasScreen = screen?.imageBase64Jpeg?.isNullOrBlank() == false
+                                                    if (hasScreen) {
+                                                        val replies = mutableListOf<String>()
+                                                        var refreshSignals = RefreshSignals()
+                                                        var steps = 0
+                                                        val maxSteps = 12
+                                                        var shouldStop = false
+                                                        while (steps < maxSteps && !shouldStop) {
+                                                            val loopPrompt =
+                                                                buildPromptPayload(chatHistory, textToSend, pendingPlan)
+                                                            val latestScreen = ScreenPerception.latest()
+                                                            val attachment =
+                                                                latestScreen?.imageBase64Jpeg?.let { base64 ->
+                                                                    ScreenAttachment(
+                                                                        base64Jpeg = base64,
+                                                                        width = latestScreen.screenWidth,
+                                                                        height = latestScreen.screenHeight,
+                                                                    )
+                                                                }
+                                                            val res = ChatAi.sendPrompt(loopPrompt, attachment)
+                                                            if (res.isFailure) {
+                                                                replies +=
+                                                                    "I couldn't process that due to an error: " +
+                                                                        (res.exceptionOrNull()?.message ?: "Unknown error") + "."
                                                                 bannerIsError = true
-                                                                banner = "Failed to send email"
+                                                                banner = "AI error: ${res.exceptionOrNull()?.message ?: "Unknown error"}"
+                                                                break
                                                             }
-                                                            summary.sentEmails > 0 && summary.failedEmails > 0 -> {
-                                                                bannerIsError = true
-                                                                banner = "Partially sent (${summary.sentEmails} sent, ${summary.failedEmails} failed)"
-                                                            }
-                                                            else -> {
-                                                                bannerIsError = false
-                                                                banner = null
-                                                            }
-                                                        }
-                                                        // Build and emit assistant reply messages for the transcript panel
-                                                        val assistantReplies =
-                                                            if (agentResult.userMessages.isNotEmpty()) {
-                                                                agentResult.userMessages
+                                                            val raw = res.getOrNull()
+                                                            val agentResult = handleGeminiResponse(raw, maxActions = 1)
+                                                            refreshSignals = agentResult.refreshSignals
+                                                            replies += agentResult.userMessages.filter { it.isNotBlank() }
+                                                            val stop =
+                                                                agentResult.actions.any { action ->
+                                                                    action is Action.UserMsg ||
+                                                                        action is Action.AwaitUser ||
+                                                                        action is Action.Done
+                                                                }
+                                                            if (stop || agentResult.actions.isEmpty()) {
+                                                                shouldStop = true
                                                             } else {
-                                                                listOf(
-                                                                    buildAssistantMessageFromResponse(
-                                                                        raw,
-                                                                        summary,
-                                                                        agentResult.userMessages,
-                                                                    ),
-                                                                )
+                                                                ScreenPerception.record(forceVision = true)
                                                             }
-                                                        onAgentReply?.invoke(
-                                                            textToSend,
-                                                            assistantReplies,
-                                                            agentResult.refreshSignals,
-                                                        )
+                                                            steps++
+                                                        }
+                                                        if (replies.isEmpty()) {
+                                                            replies += "I'm not seeing progress yet. Want me to keep trying?"
+                                                        }
+                                                        onAgentReply?.invoke(textToSend, replies, refreshSignals)
                                                     } else {
-                                                        bannerIsError = true
-                                                        banner = "OpenAI error: ${res.exceptionOrNull()?.message ?: "Unknown error"}"
-                                                        onAgentReply?.invoke(
-                                                            textToSend,
-                                                            listOf(
-                                                                "I couldn't process that due to an error: ${res.exceptionOrNull()?.message ?: "Unknown error"}.",
-                                                            ),
-                                                            RefreshSignals(),
-                                                        )
+                                                        val res = ChatAi.sendPrompt(promptPayload, null)
+                                                        if (res.isSuccess) {
+                                                            val raw = res.getOrNull()
+                                                            val agentResult = handleGeminiResponse(raw)
+                                                            val summary = agentResult.summary
+                                                            when {
+                                                                summary.sentEmails > 0 && summary.failedEmails == 0 -> {
+                                                                    query = TextFieldValue("")
+                                                                    bannerIsError = false
+                                                                    banner = "Sent email successfully"
+                                                                }
+                                                                summary.sentEmails == 0 && summary.failedEmails > 0 -> {
+                                                                    bannerIsError = true
+                                                                    banner = "Failed to send email"
+                                                                }
+                                                                summary.sentEmails > 0 && summary.failedEmails > 0 -> {
+                                                                    bannerIsError = true
+                                                                    banner = "Partially sent (${summary.sentEmails} sent, ${summary.failedEmails} failed)"
+                                                                }
+                                                                else -> {
+                                                                    bannerIsError = false
+                                                                    banner = null
+                                                                }
+                                                            }
+                                                            val assistantReplies =
+                                                                if (agentResult.userMessages.isNotEmpty()) {
+                                                                    agentResult.userMessages
+                                                                } else {
+                                                                    listOf(
+                                                                        buildAssistantMessageFromResponse(
+                                                                            raw,
+                                                                            summary,
+                                                                            agentResult.userMessages,
+                                                                        ),
+                                                                    )
+                                                                }
+                                                            onAgentReply?.invoke(
+                                                                textToSend,
+                                                                assistantReplies,
+                                                                agentResult.refreshSignals,
+                                                            )
+                                                        } else {
+                                                            bannerIsError = true
+                                                            banner = "AI error: ${res.exceptionOrNull()?.message ?: "Unknown error"}"
+                                                            onAgentReply?.invoke(
+                                                                textToSend,
+                                                                listOf(
+                                                                    "I couldn't process that due to an error: " +
+                                                                        "${res.exceptionOrNull()?.message ?: "Unknown error"}.",
+                                                                ),
+                                                                RefreshSignals(),
+                                                            )
+                                                        }
                                                     }
                                                 }
                                                 sending = false
@@ -424,6 +488,7 @@ private fun buildPromptPayload(
                     "Do not use external_action for reading on-screen content; only use external_action " +
                     "if the user explicitly asks to perform an external operation beyond the visible UI. " +
                     "Do not ask repeated confirmation questions; if the user already answered, proceed or reply. " +
+                    "Use the Targets list with center coordinates when selecting click locations. " +
                     "For requests like 'who is attending', list all visible names from the screen capture and " +
                     "do not ask to check panels or confirm.\n",
             )

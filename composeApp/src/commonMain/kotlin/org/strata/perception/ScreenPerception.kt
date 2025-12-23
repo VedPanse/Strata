@@ -55,6 +55,9 @@ data class ScreenPerceptionResult(
     val visionSummary: String? = null,
     val frameDigest: String = "",
     val visionUpdatedAtMillis: Long? = null,
+    val screenWidth: Int = 0,
+    val screenHeight: Int = 0,
+    val imageBase64Jpeg: String? = null,
 )
 
 object ScreenPerceptionStore {
@@ -150,6 +153,9 @@ object ScreenPerceptionFormatter {
                 result.appContext?.packageName?.takeIf { it.isNotBlank() }?.let {
                     append(" [").append(it).append("]")
                 }
+                if (result.screenWidth > 0 && result.screenHeight > 0) {
+                    append(" | Screen: ").append(result.screenWidth).append("x").append(result.screenHeight)
+                }
             }
 
         val ocrLines =
@@ -171,6 +177,37 @@ object ScreenPerceptionFormatter {
                 .distinct()
                 .take(80)
                 .toList()
+
+        val targets =
+            buildList {
+                val uiTargets =
+                    result.uiElements
+                        .asSequence()
+                        .mapNotNull { element ->
+                            val label = element.label?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                            val cx = (element.bounds.left + element.bounds.right) / 2
+                            val cy = (element.bounds.top + element.bounds.bottom) / 2
+                            "${label.take(48)} @ ($cx,$cy)"
+                        }
+                        .take(40)
+                        .toList()
+                addAll(uiTargets)
+                if (size < 40) {
+                    val ocrTargets =
+                        result.ocrBlocks
+                            .asSequence()
+                            .mapNotNull { block ->
+                                val label = block.text.trim().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                                val cx = (block.bounds.left + block.bounds.right) / 2
+                                val cy = (block.bounds.top + block.bounds.bottom) / 2
+                                "${label.take(48)} @ ($cx,$cy)"
+                            }
+                            .filterNot { it in uiTargets }
+                            .take(40 - size)
+                            .toList()
+                    addAll(ocrTargets)
+                }
+            }
 
         return buildString {
             append(appLine)
@@ -200,6 +237,12 @@ object ScreenPerceptionFormatter {
                 }
             } else {
                 append("UI elements: none detected\n")
+            }
+            if (targets.isNotEmpty()) {
+                append("Targets (center x,y):\n")
+                targets.forEach { line ->
+                    append("- ").append(line).append('\n')
+                }
             }
         }.trimEnd()
     }

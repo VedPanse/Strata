@@ -13,22 +13,28 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
 /**
- * JVM implementation of the OpenAI chat client.
+ * JVM implementation of the chat client.
  *
- * The prompt wrapper enforces a strict JSON array of actions that the agent
- * runtime can execute deterministically.
+ * Uses OpenAI for text-only chat and Gemini when a screen attachment is present.
+ * The prompt wrapper enforces a strict JSON array of actions that the agent runtime
+ * can execute deterministically.
  */
 actual object ChatAi {
     // ---------- Configuration ----------
-    private const val MODEL = "gpt-4o-mini"
-    private const val BASE_URL = "https://api.openai.com/v1/chat/completions"
+    private const val GEMINI_MODEL = "gemini-2.5-flash"
+    private const val GEMINI_BASE_URL =
+        "https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent"
+    private const val OPENAI_MODEL = "gpt-4o-mini"
+    private const val OPENAI_BASE_URL = "https://api.openai.com/v1/chat/completions"
     private val KOLKATA_ZONE: ZoneId = ZoneId.of("Asia/Kolkata")
     private val ISO_OFFSET: DateTimeFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
 
@@ -51,18 +57,6 @@ actual object ChatAi {
 
     private var quotaInitialized = false
 
-    @Serializable private data class ChatMessage(val role: String, val content: String)
-
-    @Serializable private data class ChatRequest(
-        val model: String,
-        val messages: List<ChatMessage>,
-        val temperature: Double = 0.2,
-    )
-
-    @Serializable private data class ChatChoice(val message: ChatMessage? = null)
-
-    @Serializable private data class ChatResponse(val choices: List<ChatChoice> = emptyList())
-
     // ---------- Public API ----------
     actual suspend fun mailRewrite(
         subject: String,
@@ -80,37 +74,118 @@ actual object ChatAi {
     }
 
     /**
-     * Send a prompt to OpenAI. We wrap the caller's prompt in our agent instructions so the
+     * Send a prompt to Gemini. We wrap the caller's prompt in our agent instructions so the
      * model returns ONLY the JSON action list we expect.
      */
-    actual suspend fun sendPrompt(prompt: String): Result<String> {
+    actual suspend fun sendPrompt(
+        prompt: String,
+        screen: ScreenAttachment?,
+    ): Result<String> {
         if (prompt.isBlank()) return Result.failure(IllegalArgumentException("Prompt is blank"))
-        return callGemini(buildAgentPrompt(prompt))
+        val fullPrompt = buildAgentPrompt(prompt)
+        return if (screen == null) {
+            callOpenAi(fullPrompt)
+        } else {
+            callGemini(fullPrompt, screen)
+        }
     }
 
     // ---------- Core request path (deduplicated) ----------
-    private suspend fun callGemini(fullPrompt: String): Result<String> {
+    private suspend fun callOpenAi(fullPrompt: String): Result<String> {
         LlmHealth.requestBlockReason()?.let { return Result.failure(IllegalStateException(it)) }
 
-        val cacheKey = "chat:$fullPrompt"
+        val cacheKey = "chat:openai:$fullPrompt"
+        LlmCache.get(cacheKey)?.let { return Result.success(it) }
+
+        val result =
+            runCatching {
+                val apiKey = OpenAiSupport.requireApiKey()
+                val payload =
+                    mapOf(
+                        "model" to OPENAI_MODEL,
+                        "messages" to
+                            listOf(
+                                mapOf(
+                                    "role" to "user",
+                                    "content" to fullPrompt,
+                                ),
+                            ),
+                        "temperature" to 0.2,
+                        "max_tokens" to 512,
+                    )
+                val body = JsonMapEncoder.encodeToString(payload)
+                val resp =
+                    http.post(OPENAI_BASE_URL) {
+                        header("Authorization", "Bearer $apiKey")
+                        contentType(ContentType.Application.Json)
+                        setBody(body)
+                    }
+                val status = resp.status.value
+                val rawBody = resp.bodyAsText()
+                if (status !in 200..299) {
+                    val message = OpenAiSupport.extractErrorMessage(json, rawBody) ?: rawBody.take(1_000)
+                    error("OpenAI HTTP $status: $message")
+                }
+                extractOpenAiText(rawBody) ?: error("OpenAI returned an empty message")
+            }
+
+        result.onSuccess { response ->
+            LlmHealth.recordSuccess()
+            LlmCache.put(cacheKey, response)
+        }.onFailure { err ->
+            LlmHealth.recordFailure(err)
+        }
+
+        return result
+    }
+
+    private suspend fun callGemini(
+        fullPrompt: String,
+        screen: ScreenAttachment? = null,
+    ): Result<String> {
+        LlmHealth.requestBlockReason()?.let { return Result.failure(IllegalStateException(it)) }
+
+        val cacheKey = if (screen == null) "chat:gemini:$fullPrompt" else "chat:gemini:$fullPrompt:screen"
         LlmCache.get(cacheKey)?.let { return Result.success(it) }
 
         ensureQuotaConfigured()
 
         val result =
             runCatching {
-                val apiKey = OpenAiSupport.requireApiKey()
-                val req =
-                    ChatRequest(
-                        model = MODEL,
-                        messages = listOf(ChatMessage(role = "user", content = fullPrompt)),
+                val apiKey = GeminiSupport.requireApiKey()
+                val parts = mutableListOf<Map<String, Any?>>()
+                parts += mapOf("text" to fullPrompt)
+                if (screen != null) {
+                    parts +=
+                        mapOf(
+                            "inline_data" to
+                                mapOf(
+                                    "mime_type" to "image/jpeg",
+                                    "data" to screen.base64Jpeg,
+                                ),
+                        )
+                }
+                val payload =
+                    mapOf(
+                        "contents" to
+                            listOf(
+                                mapOf(
+                                    "role" to "user",
+                                    "parts" to parts,
+                                ),
+                            ),
+                        "generationConfig" to
+                            mapOf(
+                                "temperature" to 0.2,
+                                "maxOutputTokens" to 512,
+                            ),
                     )
+                val body = JsonMapEncoder.encodeToString(payload)
 
                 val resp =
-                    http.post(BASE_URL) {
+                    http.post("$GEMINI_BASE_URL?key=$apiKey") {
                         contentType(ContentType.Application.Json)
-                        header("Authorization", "Bearer $apiKey")
-                        setBody(json.encodeToString(ChatRequest.serializer(), req))
+                        setBody(body)
                     }
 
                 val status = resp.status.value
@@ -118,13 +193,11 @@ actual object ChatAi {
 
                 // 1) Surface non-success with full server message
                 if (status !in 200..299) {
-                    val message = OpenAiSupport.extractErrorMessage(json, rawBody) ?: rawBody.take(1_000)
-                    error("OpenAI HTTP $status: $message")
+                    val message = GeminiSupport.extractErrorMessage(json, rawBody) ?: rawBody.take(1_000)
+                    error("Gemini HTTP $status: $message")
                 }
 
-                val parsed = json.decodeFromString(ChatResponse.serializer(), rawBody)
-                parsed.choices.firstOrNull()?.message?.content?.trim()
-                    ?: error("OpenAI returned an empty message")
+                extractGeminiText(rawBody) ?: error("Gemini returned an empty message")
             }
 
         result.onSuccess { response ->
@@ -158,9 +231,28 @@ actual object ChatAi {
     private fun ensureQuotaConfigured() {
         if (quotaInitialized) return
         quotaInitialized = true
-        val raw = OpenAiSupport.readEnv("OPENAI_DAILY_QUOTA")?.trim()?.toIntOrNull()
+        val raw = GeminiSupport.readEnv("GEMINI_DAILY_QUOTA")?.trim()?.toIntOrNull()
         LlmHealth.setDailyLimit(raw)
     }
+
+    private fun extractGeminiText(raw: String): String? =
+        runCatching {
+            val root = json.parseToJsonElement(raw).jsonObject
+            val candidates = root["candidates"]?.jsonArray ?: return null
+            val first = candidates.firstOrNull()?.jsonObject ?: return null
+            val content = first["content"]?.jsonObject ?: return null
+            val parts = content["parts"]?.jsonArray ?: return null
+            parts.firstOrNull()?.jsonObject?.get("text")?.jsonPrimitive?.content?.trim()
+        }.getOrNull()
+
+    private fun extractOpenAiText(raw: String): String? =
+        runCatching {
+            val root = json.parseToJsonElement(raw).jsonObject
+            val choices = root["choices"]?.jsonArray ?: return null
+            val first = choices.firstOrNull()?.jsonObject ?: return null
+            val message = first["message"]?.jsonObject ?: return null
+            message["content"]?.jsonPrimitive?.content?.trim()
+        }.getOrNull()
 
     // ---------- Utilities ----------
     // ---------- Prompts ----------
@@ -197,6 +289,11 @@ GENERAL OPERATING PRINCIPLES:
 - When the prompt includes screen perception, answer directly from the visible screen content.
   Do not ask for confirmation or propose checking UI panels; list what you can see and, if needed,
   state what is not visible and request the user to open/scroll that view.
+- When screen perception is present, output at most one action per response so the system can
+  re-capture the screen after each step.
+- For any click, first output a move_cursor action. On the next response, output the click action.
+- Avoid asking the user to intervene unless the UI is blocked or you need credentials.
+- Use open_url for informational browsing only (scores, facts, links), not for app launching.
 
 ALLOWED ACTION TYPES (exactly one top-level key per object):
 - send_email
@@ -212,6 +309,18 @@ ALLOWED ACTION TYPES (exactly one top-level key per object):
 - update_task
 - delete_task
 - await_user
+- tap
+- move_cursor
+- click
+- mouse_down
+- mouse_up
+- drag
+- type_text
+- scroll
+- open_url
+- key_combo
+- press_key
+- done
 - remember
 - clear_memory
 - web_search
@@ -234,6 +343,8 @@ FORMAT RULES:
 - If you output `await_user`, the array must contain only that single action.
 - Use `remember` only when the user explicitly asks you to remember something or store a preference.
 - Use `web_search` or `fetch_url` when the user asks for current info, links, or online research.
+- For `open_url`, open the URL in the user's default browser.
+- For `key_combo`, provide key names like ["CMD","SPACE"] or ["CTRL","L"].
 
 STRICT EMAIL POLICY:
 - Only trigger mail actions when the user clearly asks to send/forward/reply/notify by email.
@@ -241,13 +352,17 @@ STRICT EMAIL POLICY:
 - For schedule/planning requests, prefer calendar and task actions unless an email is part of the ask.
 
 INTERACTION RULES:
-- After every operational action (anything except `user_msg`), emit a trailing
-  `user_msg` summarizing what you just did and offering the next logical choice or
+- When screen perception is present, do not emit a trailing `user_msg` after UI actions.
+  Only emit `user_msg` when you need to stop or ask for input.
+- When screen perception is not present, after every operational action (anything except `user_msg`),
+  emit a trailing `user_msg` summarizing what you just did and offering the next logical choice or
   clarification.
 - Any follow-up question must appear inside a `user_msg` or `await_user`. Keep them concise and purposeful.
 - Never ask repetitive confirmation questions; if the user already answered, proceed or reply directly.
 - If the user is purely conversational, respond with a single `user_msg` only.
 - External actions are disabled. Do not output `external_action`.
+- For UI tasks, do not use web_search. Use move_cursor/click/type_text/scroll/press_key and verify via the screen.
+- Never claim an app/site is open unless you can see it on screen.
 
 ACTION PAYLOAD CONTRACTS:
 
@@ -394,6 +509,83 @@ await_user:
     "question": "string (the clarifying question)",
     "context": "optional short context for resuming",
     "assumptions": "optional notes"
+  }
+}
+
+move_cursor:
+{
+  "move_cursor": {
+    "x": 123,
+    "y": 456
+  }
+}
+
+click:
+{
+  "click": {
+    "x": 123,
+    "y": 456,
+    "button": "left",
+    "count": 1
+  }
+}
+
+mouse_down:
+{
+  "mouse_down": {
+    "x": 123,
+    "y": 456,
+    "button": "left"
+  }
+}
+
+mouse_up:
+{
+  "mouse_up": {
+    "x": 123,
+    "y": 456,
+    "button": "left"
+  }
+}
+
+drag:
+{
+  "drag": {
+    "start_x": 123,
+    "start_y": 456,
+    "end_x": 420,
+    "end_y": 900,
+    "duration_ms": 350,
+    "button": "left"
+  }
+}
+
+type_text:
+{
+  "type_text": {
+    "text": "string"
+  }
+}
+
+scroll:
+{
+  "scroll": {
+    "dx": 0,
+    "dy": 320
+  }
+}
+
+press_key:
+{
+  "press_key": {
+    "key": "ENTER"
+  }
+}
+
+done:
+{
+  "done": {
+    "summary": "optional completion note"
   }
 }
 
