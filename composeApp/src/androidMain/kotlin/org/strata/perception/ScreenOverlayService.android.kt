@@ -18,16 +18,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
-import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import org.strata.ui.ScreenOverlayPrompt
 
-class ScreenOverlayService : LifecycleService() {
+class ScreenOverlayService : LifecycleService(), SavedStateRegistryOwner {
     companion object {
         private const val CHANNEL_ID = "strata_screen_overlay"
         private const val NOTIFICATION_ID = 4123
         private const val ACTION_SHOW = "org.strata.action.SHOW_OVERLAY"
         private const val ACTION_HIDE = "org.strata.action.HIDE_OVERLAY"
+
         @Volatile var isShowing: Boolean = false
 
         fun show(context: Context) {
@@ -47,15 +51,25 @@ class ScreenOverlayService : LifecycleService() {
 
     private lateinit var windowManager: WindowManager
     private var overlayView: ComposeView? = null
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+
+    override val savedStateRegistry: SavedStateRegistry
+        get() = savedStateRegistryController.savedStateRegistry
 
     override fun onCreate() {
         super.onCreate()
+        savedStateRegistryController.performAttach()
+        savedStateRegistryController.performRestore(null)
         windowManager = getSystemService(Service.WINDOW_SERVICE) as WindowManager
         ensureNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         when (intent?.action) {
             ACTION_SHOW -> showOverlay()
             ACTION_HIDE -> stopOverlay()

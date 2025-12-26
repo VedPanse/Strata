@@ -13,6 +13,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Android stub for Gemini chat; desktop handles the actual implementation.
@@ -140,12 +142,13 @@ actual object ChatAi {
 
     private fun nowIsoKolkata(): String {
         val zone = TimeZone.of("Asia/Kolkata")
+        val zoneId = ZoneId.of("Asia/Kolkata")
         val now = Clock.System.now()
         val local = now.toLocalDateTime(zone)
-        val offset = zone.offsetAt(now).toString().removePrefix("UTC")
+        val offset = zoneId.rules.getOffset(Instant.ofEpochMilli(now.toEpochMilliseconds()))
         val date = "%04d-%02d-%02d".format(local.year, local.monthNumber, local.dayOfMonth)
         val time = "%02d:%02d:%02d".format(local.hour, local.minute, local.second)
-        return "${date}T$time$offset"
+        return "${date}T$time${offset.id}"
     }
 
     private fun extractGeminiText(raw: String): String? =

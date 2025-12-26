@@ -11,7 +11,13 @@ data class WebSearchResult(
 )
 
 expect object WebFetchApi {
-    suspend fun search(query: String, limit: Int = 3): Result<List<WebSearchResult>>
+    suspend fun search(
+        query: String,
+        limit: Int = 3,
+    ): Result<List<WebSearchResult>>
 
-    suspend fun fetch(url: String, maxChars: Int = 2000): Result<String>
+    suspend fun fetch(
+        url: String,
+        maxChars: Int = 2000,
+    ): Result<String>
 }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -61,6 +62,7 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -80,11 +82,10 @@ import kotlinx.datetime.plus
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.compose.resources.painterResource
+import org.strata.ai.LlmHealth
 import org.strata.ai.RefreshSignals
 import org.strata.ai.SummaryAi
 import org.strata.ai.macro.MailPreviewOverlay
-import org.strata.ai.LlmHealth
-import org.strata.perception.ScreenPerception
 import org.strata.auth.CalendarApi
 import org.strata.auth.CalendarEvent
 import org.strata.auth.GmailApi
@@ -93,6 +94,8 @@ import org.strata.auth.JwtTools
 import org.strata.auth.SessionStorage
 import org.strata.auth.TaskItem
 import org.strata.auth.TasksApi
+import org.strata.perception.ScreenPerception
+import org.strata.persistence.PlanStore
 import org.strata.reminder.ReminderDueScheduler
 import org.strata.ui.calendar.CalendarFeed
 import org.strata.ui.mail.MailFeed
@@ -104,7 +107,6 @@ import org.strata.ui.ticket.TicketStatus
 import org.strata.ui.ticket.TicketTypes
 import org.strata.ui.ticket.TicketUI
 import org.strata.ui.ticket.TicketUiModel
-import org.strata.persistence.PlanStore
 import strata.composeapp.generated.resources.HomescreenWallpaper
 import strata.composeapp.generated.resources.Res
 import strata.composeapp.generated.resources.StrataNoText
@@ -381,10 +383,11 @@ class Homescreen : Screen {
 
                     fun inferAbbrFromName(name: String): String {
                         // Prefer explicit parentheses like "London Heathrow (LHR)"
-                        val paren = Regex("\\(([A-Z]{3})\\)", RegexOption.IGNORE_CASE)
-                            .find(name)
-                            ?.groupValues
-                            ?.getOrNull(1)
+                        val paren =
+                            Regex("\\(([A-Z]{3})\\)", RegexOption.IGNORE_CASE)
+                                .find(name)
+                                ?.groupValues
+                                ?.getOrNull(1)
                         if (!paren.isNullOrBlank()) return paren.uppercase()
                         // Gemini returns abbreviations as the last word in the location string.
                         val lastWord = name.trim().split(Regex("\\s+")).lastOrNull().orEmpty()
@@ -491,113 +494,114 @@ class Homescreen : Screen {
                 messages.add(ChatMessage("assistant", pending.question))
             }
         }
-        Box(modifier = Modifier.fillMaxSize()) {
-            Row(modifier = Modifier.fillMaxSize()) {
-                // Left spacer/pane (reserved for future navigation)
-                LeftNavPane(
-                    modifier =
-                        Modifier
-                            .fillMaxHeight()
-                            .weight(HomeDimens.LeftPaneWeight)
-                            .padding(horizontal = 5.dp),
-                    onHome = { navigator.replaceAll(Homescreen()) },
-                    onAccountSettings = { navigator.push(SettingsScreen()) },
-                    onLogout = {
-                        // Clear persisted session and return to onboarding
-                        SessionStorage.clear()
-                        navigator.replaceAll(OnboardingScreen())
-                    },
-                )
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val isCompact = maxWidth < 900.dp
+            val isNarrow = maxWidth < 600.dp
+            val contentPadding = if (isCompact) 16.dp else HomeDimens.ContentEndPadding
+            val heroHeight = if (isCompact) 180.dp else HomeDimens.HeroHeight
+            val startPadding = if (isCompact) contentPadding else 0.dp
 
-                // Main content
-                Column(
-                    modifier =
-                        Modifier
-                            .weight(HomeDimens.RightPaneWeight)
-                            .fillMaxHeight()
-                            .padding(end = HomeDimens.ContentEndPadding)
-                            .verticalScroll(rememberScrollState()),
-                ) {
-                    Spacer(modifier = Modifier.height(HomeDimens.TopSpacing))
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(end = 20.dp),
-                    ) {
-                        Image(
-                            painter = painterResource(Res.drawable.StrataNoText),
-                            contentDescription = null,
-                            modifier =
-                                Modifier.width(50.dp)
-                                    .absoluteOffset(y = (-7).dp),
-                        )
-                        Text("Strata", fontWeight = FontWeight.Bold, fontSize = 25.sp)
-                        LlmApiHealth(
+            val onHome = { navigator.replaceAll(Homescreen()) }
+            val onAccountSettings = { navigator.push(SettingsScreen()) }
+            val onLogout = {
+                // Clear persisted session and return to onboarding
+                SessionStorage.clear()
+                navigator.replaceAll(OnboardingScreen())
+            }
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (!isCompact) {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        // Left spacer/pane (reserved for future navigation)
+                        LeftNavPane(
                             modifier =
                                 Modifier
-                                    .padding(start = 16.dp)
-                                    .width(220.dp),
+                                    .fillMaxHeight()
+                                    .weight(HomeDimens.LeftPaneWeight)
+                                    .padding(horizontal = 5.dp),
+                            onHome = onHome,
+                            onAccountSettings = onAccountSettings,
+                            onLogout = onLogout,
                         )
-                        Spacer(modifier = Modifier.weight(1f))
-                        UserProfile()
-                    }
-                    Spacer(modifier = Modifier.height(HomeDimens.TopSpacing))
-                    HeroImage()
-                    Spacer(modifier = Modifier.height(HomeDimens.TopSpacing))
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier.weight(0.7f),
-                        ) {
-                            HomescreenTabs(selected = selected, onSelect = { selected = it })
-                            Spacer(modifier = Modifier.height(HomeDimens.TabsBelowSpacing))
-                            when (selected) {
-                                Section.Feed ->
-                                    Feed(
-                                        mailState = FeedSourceState(mailIsLoading, mailError, mailItems),
-                                        calendarState = FeedSourceState(calIsLoading, calError, calEvents),
-                                        tasksState = FeedSourceState(tasksIsLoading, tasksError, tasksItems),
-                                        ticketsState = FeedSourceState(ticketsIsLoading, ticketsError, ticketsItems),
-                                        onTaskToggle = { handleTaskToggle(it) },
-                                    )
-                                Section.Mail ->
-                                    MailFeed(
-                                        isLoading = mailIsLoading,
-                                        error = mailError,
-                                        mails = mailItems,
-                                    )
-                                Section.Calendar ->
-                                    CalendarFeed(
-                                        isLoading = calIsLoading,
-                                        error = calError,
-                                        events = calEvents,
-                                    )
-                                Section.Reminders ->
-                                    Reminders(
-                                        isLoading = tasksIsLoading,
-                                        error = tasksError,
-                                        tasks = tasksItems,
-                                    )
-                            }
-                        }
-                        Column(
-                            modifier = Modifier.weight(0.3f).fillMaxHeight(),
-                        ) {
-                            val isOnline =
-                                !session?.accessToken.isNullOrBlank() &&
-                                    !mailIsLoading && !calIsLoading && !tasksIsLoading &&
-                                    mailError == null && calError == null && tasksError == null
 
-                            SummaryPanel(
+                        // Main content
+                        Column(
+                            modifier =
+                                Modifier
+                                    .weight(HomeDimens.RightPaneWeight)
+                                    .fillMaxHeight()
+                                    .padding(end = contentPadding)
+                                    .verticalScroll(rememberScrollState()),
+                        ) {
+                            HomescreenContent(
+                                isCompact = isCompact,
+                                isNarrow = isNarrow,
+                                heroHeight = heroHeight,
+                                selected = selected,
+                                onSelect = { selected = it },
+                                mailIsLoading = mailIsLoading,
+                                mailError = mailError,
+                                mailItems = mailItems,
+                                calIsLoading = calIsLoading,
+                                calError = calError,
+                                calEvents = calEvents,
+                                tasksIsLoading = tasksIsLoading,
+                                tasksError = tasksError,
+                                tasksItems = tasksItems,
+                                ticketsIsLoading = ticketsIsLoading,
+                                ticketsError = ticketsError,
+                                ticketsItems = ticketsItems,
+                                handleTaskToggle = { handleTaskToggle(it) },
+                                session = session,
                                 summaryText = summaryText,
-                                isLoading = summaryIsLoading,
-                                error = summaryError,
-                                onRefresh = { triggerFullRefresh() },
-                                isOnline = isOnline,
+                                summaryIsLoading = summaryIsLoading,
+                                summaryError = summaryError,
+                                triggerFullRefresh = { triggerFullRefresh() },
                                 messages = messages,
-                                recommendations = buildPlayfulRecommendations(mailItems, calEvents, tasksItems),
-                                modifier = Modifier.fillMaxHeight(),
+                                onHome = onHome,
+                                onAccountSettings = onAccountSettings,
+                                onLogout = onLogout,
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(80.dp))
+                } else {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(start = startPadding, end = contentPadding),
+                    ) {
+                        HomescreenContent(
+                            isCompact = isCompact,
+                            isNarrow = isNarrow,
+                            heroHeight = heroHeight,
+                            selected = selected,
+                            onSelect = { selected = it },
+                            mailIsLoading = mailIsLoading,
+                            mailError = mailError,
+                            mailItems = mailItems,
+                            calIsLoading = calIsLoading,
+                            calError = calError,
+                            calEvents = calEvents,
+                            tasksIsLoading = tasksIsLoading,
+                            tasksError = tasksError,
+                            tasksItems = tasksItems,
+                            ticketsIsLoading = ticketsIsLoading,
+                            ticketsError = ticketsError,
+                            ticketsItems = ticketsItems,
+                            handleTaskToggle = { handleTaskToggle(it) },
+                            session = session,
+                            summaryText = summaryText,
+                            summaryIsLoading = summaryIsLoading,
+                            summaryError = summaryError,
+                            triggerFullRefresh = { triggerFullRefresh() },
+                            messages = messages,
+                            onHome = onHome,
+                            onAccountSettings = onAccountSettings,
+                            onLogout = onLogout,
+                        )
+                    }
                 }
             }
 
@@ -611,8 +615,11 @@ class Homescreen : Screen {
             ReminderDueNotifications(
                 modifier =
                     Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = HomeDimens.ContentEndPadding, bottom = 24.dp)
+                        .align(if (isCompact) Alignment.BottomCenter else Alignment.BottomStart)
+                        .padding(
+                            start = if (isCompact) 0.dp else contentPadding,
+                            bottom = if (isCompact) 96.dp else 24.dp,
+                        )
                         .zIndex(9_999.3f),
                 onNavigateToReminders = { selected = Section.Reminders },
             )
@@ -621,51 +628,314 @@ class Homescreen : Screen {
             Box(
                 modifier =
                     Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = HomeDimens.ContentEndPadding, bottom = 20.dp)
+                        .align(if (isCompact) Alignment.BottomCenter else Alignment.BottomEnd)
+                        .padding(
+                            start = if (isCompact) contentPadding else 0.dp,
+                            end = contentPadding,
+                            bottom = if (isCompact) 16.dp else 20.dp,
+                        )
                         .zIndex(9_999f),
             ) {
                 val scope = rememberCoroutineScope()
                 var overlayActive by remember { mutableStateOf(ScreenPerception.isOverlayActive()) }
 
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    StrataButton(
-                        text = if (overlayActive) "Stop screen" else "Record screen",
-                        onClick = {
-                            if (overlayActive) {
-                                ScreenPerception.stopOverlay()
-                                ScreenPerception.stopStream()
-                                overlayActive = false
-                            } else {
-                                ScreenPerception.startOverlay()
-                                overlayActive = true
-                                ScreenPerception.startStream()
-                                scope.launch { ScreenPerception.record() }
-                            }
-                        },
-                    )
+                val buttonSpacing = 10.dp
+                val overlayArrangement = Arrangement.spacedBy(buttonSpacing)
+                val overlayLayoutModifier = if (isCompact) Modifier.fillMaxWidth() else Modifier
 
-                    PromptInput(
-                        fullWidth = false,
-                        contentAlignment = Alignment.CenterEnd,
-                        chatHistory = messages.map { it.role to it.text },
-                        onAgentReply = { user, assistantReplies, refreshSignals ->
-                            messages.add(ChatMessage("user", user))
-                            assistantReplies.forEach { reply ->
-                                if (reply.isNotBlank()) {
-                                    messages.add(ChatMessage("assistant", reply))
+                if (isCompact) {
+                    Column(
+                        modifier = overlayLayoutModifier,
+                        verticalArrangement = overlayArrangement,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        StrataButton(
+                            text = if (overlayActive) "Stop screen" else "Record screen",
+                            onClick = {
+                                if (overlayActive) {
+                                    ScreenPerception.stopOverlay()
+                                    ScreenPerception.stopStream()
+                                    overlayActive = false
+                                } else {
+                                    ScreenPerception.startOverlay()
+                                    overlayActive = true
+                                    ScreenPerception.startStream()
+                                    scope.launch { ScreenPerception.record() }
                                 }
-                            }
-                            applyRefreshSignals(refreshSignals)
-                        },
-                    )
+                            },
+                        )
+
+                        PromptInput(
+                            fullWidth = true,
+                            contentAlignment = Alignment.Center,
+                            chatHistory = messages.map { it.role to it.text },
+                            onAgentReply = { user, assistantReplies, refreshSignals ->
+                                messages.add(ChatMessage("user", user))
+                                assistantReplies.forEach { reply ->
+                                    if (reply.isNotBlank()) {
+                                        messages.add(ChatMessage("assistant", reply))
+                                    }
+                                }
+                                applyRefreshSignals(refreshSignals)
+                            },
+                        )
+                    }
+                } else {
+                    Row(
+                        horizontalArrangement = overlayArrangement,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = overlayLayoutModifier,
+                    ) {
+                        StrataButton(
+                            text = if (overlayActive) "Stop screen" else "Record screen",
+                            onClick = {
+                                if (overlayActive) {
+                                    ScreenPerception.stopOverlay()
+                                    ScreenPerception.stopStream()
+                                    overlayActive = false
+                                } else {
+                                    ScreenPerception.startOverlay()
+                                    overlayActive = true
+                                    ScreenPerception.startStream()
+                                    scope.launch { ScreenPerception.record() }
+                                }
+                            },
+                        )
+
+                        PromptInput(
+                            fullWidth = false,
+                            contentAlignment = Alignment.CenterEnd,
+                            chatHistory = messages.map { it.role to it.text },
+                            onAgentReply = { user, assistantReplies, refreshSignals ->
+                                messages.add(ChatMessage("user", user))
+                                assistantReplies.forEach { reply ->
+                                    if (reply.isNotBlank()) {
+                                        messages.add(ChatMessage("assistant", reply))
+                                    }
+                                }
+                                applyRefreshSignals(refreshSignals)
+                            },
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun HomescreenContent(
+    isCompact: Boolean,
+    isNarrow: Boolean,
+    heroHeight: Dp,
+    selected: Section,
+    onSelect: (Section) -> Unit,
+    mailIsLoading: Boolean,
+    mailError: String?,
+    mailItems: List<GmailMail>,
+    calIsLoading: Boolean,
+    calError: String?,
+    calEvents: List<CalendarEvent>,
+    tasksIsLoading: Boolean,
+    tasksError: String?,
+    tasksItems: List<TaskItem>,
+    ticketsIsLoading: Boolean,
+    ticketsError: String?,
+    ticketsItems: List<TicketUiModel>,
+    handleTaskToggle: (TaskItem) -> Unit,
+    session: org.strata.auth.AuthSession?,
+    summaryText: String?,
+    summaryIsLoading: Boolean,
+    summaryError: String?,
+    triggerFullRefresh: () -> Unit,
+    messages: List<ChatMessage>,
+    onHome: () -> Unit,
+    onAccountSettings: () -> Unit,
+    onLogout: () -> Unit,
+) {
+    Spacer(modifier = Modifier.height(HomeDimens.TopSpacing))
+
+    if (isCompact) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Image(
+                    painter = painterResource(Res.drawable.StrataNoText),
+                    contentDescription = null,
+                    modifier =
+                        Modifier
+                            .width(44.dp)
+                            .absoluteOffset(y = (-6).dp),
+                )
+                Text("Strata", fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                Spacer(modifier = Modifier.weight(1f))
+                UserProfile()
+            }
+
+            LlmApiHealth(modifier = Modifier.fillMaxWidth())
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NavIcon(
+                    icon = Icons.Filled.Home,
+                    accent = Color.White,
+                    highlight = true,
+                ) { onHome() }
+                NavIcon(
+                    icon = Icons.Filled.Settings,
+                    accent = Color.White.copy(alpha = 0.8f),
+                ) { onAccountSettings() }
+                NavIcon(
+                    icon = Icons.AutoMirrored.Filled.Logout,
+                    accent = Color(0xFFFF5C5C),
+                ) { onLogout() }
+            }
+        }
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(end = 20.dp),
+        ) {
+            Image(
+                painter = painterResource(Res.drawable.StrataNoText),
+                contentDescription = null,
+                modifier =
+                    Modifier.width(50.dp)
+                        .absoluteOffset(y = (-7).dp),
+            )
+            Text("Strata", fontWeight = FontWeight.Bold, fontSize = 25.sp)
+            LlmApiHealth(
+                modifier =
+                    Modifier
+                        .padding(start = 16.dp)
+                        .width(220.dp),
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            UserProfile()
+        }
+    }
+
+    Spacer(modifier = Modifier.height(HomeDimens.TopSpacing))
+    HeroImage(height = heroHeight)
+    Spacer(modifier = Modifier.height(HomeDimens.TopSpacing))
+
+    if (isCompact) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HomescreenTabs(selected = selected, onSelect = onSelect)
+            Spacer(modifier = Modifier.height(HomeDimens.TabsBelowSpacing))
+            when (selected) {
+                Section.Feed ->
+                    Feed(
+                        mailState = FeedSourceState(mailIsLoading, mailError, mailItems),
+                        calendarState = FeedSourceState(calIsLoading, calError, calEvents),
+                        tasksState = FeedSourceState(tasksIsLoading, tasksError, tasksItems),
+                        ticketsState = FeedSourceState(ticketsIsLoading, ticketsError, ticketsItems),
+                        onTaskToggle = { handleTaskToggle(it) },
+                    )
+                Section.Mail ->
+                    MailFeed(
+                        isLoading = mailIsLoading,
+                        error = mailError,
+                        mails = mailItems,
+                    )
+                Section.Calendar ->
+                    CalendarFeed(
+                        isLoading = calIsLoading,
+                        error = calError,
+                        events = calEvents,
+                    )
+                Section.Reminders ->
+                    Reminders(
+                        isLoading = tasksIsLoading,
+                        error = tasksError,
+                        tasks = tasksItems,
+                    )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            val isOnline =
+                !session?.accessToken.isNullOrBlank() &&
+                    !mailIsLoading && !calIsLoading && !tasksIsLoading &&
+                    mailError == null && calError == null && tasksError == null
+
+            SummaryPanel(
+                summaryText = summaryText,
+                isLoading = summaryIsLoading,
+                error = summaryError,
+                onRefresh = { triggerFullRefresh() },
+                isOnline = isOnline,
+                messages = messages,
+                recommendations = buildPlayfulRecommendations(mailItems, calEvents, tasksItems),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    } else {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.weight(0.7f),
+            ) {
+                HomescreenTabs(selected = selected, onSelect = onSelect)
+                Spacer(modifier = Modifier.height(HomeDimens.TabsBelowSpacing))
+                when (selected) {
+                    Section.Feed ->
+                        Feed(
+                            mailState = FeedSourceState(mailIsLoading, mailError, mailItems),
+                            calendarState = FeedSourceState(calIsLoading, calError, calEvents),
+                            tasksState = FeedSourceState(tasksIsLoading, tasksError, tasksItems),
+                            ticketsState = FeedSourceState(ticketsIsLoading, ticketsError, ticketsItems),
+                            onTaskToggle = { handleTaskToggle(it) },
+                        )
+                    Section.Mail ->
+                        MailFeed(
+                            isLoading = mailIsLoading,
+                            error = mailError,
+                            mails = mailItems,
+                        )
+                    Section.Calendar ->
+                        CalendarFeed(
+                            isLoading = calIsLoading,
+                            error = calError,
+                            events = calEvents,
+                        )
+                    Section.Reminders ->
+                        Reminders(
+                            isLoading = tasksIsLoading,
+                            error = tasksError,
+                            tasks = tasksItems,
+                        )
+                }
+            }
+            Column(
+                modifier = Modifier.weight(0.3f).fillMaxHeight(),
+            ) {
+                val isOnline =
+                    !session?.accessToken.isNullOrBlank() &&
+                        !mailIsLoading && !calIsLoading && !tasksIsLoading &&
+                        mailError == null && calError == null && tasksError == null
+
+                SummaryPanel(
+                    summaryText = summaryText,
+                    isLoading = summaryIsLoading,
+                    error = summaryError,
+                    onRefresh = { triggerFullRefresh() },
+                    isOnline = isOnline,
+                    messages = messages,
+                    recommendations = buildPlayfulRecommendations(mailItems, calEvents, tasksItems),
+                    modifier = Modifier.fillMaxHeight(),
+                )
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(if (isNarrow) 96.dp else 80.dp))
 }
 
 private enum class Section(val displayName: String) {
@@ -727,14 +997,14 @@ private fun ChatTranscript(
 }
 
 @Composable
-private fun HeroImage() {
+private fun HeroImage(height: Dp) {
     Image(
         painter = painterResource(Res.drawable.HomescreenWallpaper),
         contentDescription = null,
         modifier =
             Modifier
                 .fillMaxWidth()
-                .height(HomeDimens.HeroHeight)
+                .height(height)
                 .clip(RoundedCornerShape(HomeDimens.HeroCorner)),
         contentScale = ContentScale.Crop,
     )
@@ -1007,8 +1277,7 @@ private fun SummaryPanel(
     Column(
         modifier =
             modifier
-                .fillMaxWidth()
-                .fillMaxHeight(),
+                .fillMaxWidth(),
     ) {
         Column {
             Text("Today's summary", fontSize = HomeDimens.SummaryTitleSize, fontWeight = FontWeight.SemiBold)

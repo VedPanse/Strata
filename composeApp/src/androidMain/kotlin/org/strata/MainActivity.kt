@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
+import org.strata.auth.GoogleAuth
 import org.strata.perception.ScreenCapturePermissionManager
 import java.lang.ref.WeakReference
 
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
         ScreenCapturePermissionManager.onActivityResult(requestCode, resultCode, data)
+        GoogleAuth.onActivityResult(requestCode, resultCode, data)
     }
 }
 

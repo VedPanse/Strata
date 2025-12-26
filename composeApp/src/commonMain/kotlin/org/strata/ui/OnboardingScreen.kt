@@ -74,8 +74,21 @@ class OnboardingScreen : Screen {
                         fontSize = 14.sp,
                     )
                     Spacer(Modifier.height(24.dp))
-                    StrataButton("Sign up with Google") {
-                        navigator.push(Homescreen())
+                    StrataButton(
+                        text = if (isLoading) "Connecting to Google…" else "Sign up with Google",
+                        enabled = !isLoading,
+                    ) {
+                        vm.signIn {
+                            navigator.push(Homescreen())
+                        }
+                    }
+                    if (error != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = error ?: "",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                     }
                 }
             }

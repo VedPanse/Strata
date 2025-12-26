@@ -10,5 +10,6 @@ import java.lang.ref.WeakReference
 
 object AppContext {
     lateinit var context: Context
+
     @Volatile var activity: WeakReference<Activity>? = null
 }

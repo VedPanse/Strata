@@ -31,14 +31,12 @@ import org.strata.auth.GmailApi
 import org.strata.auth.SessionStorage
 import org.strata.auth.TaskItem
 import org.strata.auth.TasksApi
-import org.strata.ai.WebFetchApi
-import org.strata.ai.WebSearchResult
-import org.strata.platform.AppLauncher
-import org.strata.platform.UiAutomation
-import org.strata.platform.UrlHandler
 import org.strata.perception.ScreenPerception
 import org.strata.persistence.MemoryStore
 import org.strata.persistence.PlanStore
+import org.strata.platform.AppLauncher
+import org.strata.platform.UiAutomation
+import org.strata.platform.UrlHandler
 import kotlin.math.abs
 import kotlin.random.Random
 
@@ -1108,11 +1106,12 @@ suspend fun handleGeminiResponse(
                 val query = action.web_search.query.trim()
                 if (query.isEmpty()) return@forEachIndexed
                 val limit = action.web_search.top_k?.coerceIn(1, 5) ?: 3
-                val results = WebFetchApi.search(query, limit).getOrElse { error ->
-                    userMessages += "I couldn't search the web just now (${error.message})."
-                    suppressNextUserMsg = true
-                    return@forEachIndexed
-                }
+                val results =
+                    WebFetchApi.search(query, limit).getOrElse { error ->
+                        userMessages += "I couldn't search the web just now (${error.message})."
+                        suppressNextUserMsg = true
+                        return@forEachIndexed
+                    }
                 val formatted =
                     formatSearchResults(results).ifBlank {
                         "I didn't find any good results for \"$query\"."
@@ -1124,13 +1123,14 @@ suspend fun handleGeminiResponse(
                 val url = action.fetch_url.url.trim()
                 if (url.isEmpty()) return@forEachIndexed
                 val maxChars = action.fetch_url.max_chars?.coerceIn(500, 4000) ?: 2000
-                val content = WebFetchApi.fetch(url, maxChars).getOrElse { error ->
-                    userMessages += "I couldn't fetch that page (${error.message})."
-                    suppressNextUserMsg = true
-                    return@forEachIndexed
-                }
+                val content =
+                    WebFetchApi.fetch(url, maxChars).getOrElse { error ->
+                        userMessages += "I couldn't fetch that page (${error.message})."
+                        suppressNextUserMsg = true
+                        return@forEachIndexed
+                    }
                 val snippet = content.trim().take(maxChars)
-                userMessages += "Here's a quick summary from $url:\n${snippet}"
+                userMessages += "Here's a quick summary from $url:\n$snippet"
                 suppressNextUserMsg = true
             }
             is Action.AwaitUser -> {

@@ -4,8 +4,8 @@
  */
 package org.strata.perception
 
-import android.graphics.Rect as AndroidRect
 import android.view.accessibility.AccessibilityNodeInfo
+import android.graphics.Rect as AndroidRect
 
 data class AccessibilitySnapshot(
     val appContext: AppContextInfo?,

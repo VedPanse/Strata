@@ -66,8 +66,8 @@ import org.strata.ai.buildAssistantMessageFromResponse
 import org.strata.ai.handleGeminiResponse
 import org.strata.perception.ScreenPerception
 import org.strata.perception.ScreenPerceptionFormatter
-import org.strata.persistence.PlanStore
 import org.strata.persistence.MemoryStore
+import org.strata.persistence.PlanStore
 
 @Composable
 fun StrataButton(
@@ -128,18 +128,35 @@ fun PromptInput(
     var banner by remember { mutableStateOf<String?>(null) }
     var bannerIsError by remember { mutableStateOf(false) }
 
-    fun localPendingResponse(pendingPlan: org.strata.persistence.PendingPlan?, userText: String): String? {
+    fun localPendingResponse(
+        pendingPlan: org.strata.persistence.PendingPlan?,
+        userText: String,
+    ): String? {
         if (pendingPlan == null) return null
         val normalized = userText.trim().lowercase()
         if (normalized.isEmpty()) return null
 
         val yesTokens =
             setOf(
-                "yes", "y", "ok", "okay", "sure", "do it", "go ahead", "proceed",
+                "yes",
+                "y",
+                "ok",
+                "okay",
+                "sure",
+                "do it",
+                "go ahead",
+                "proceed",
             )
         val noTokens =
             setOf(
-                "no", "n", "stop", "cancel", "don't", "do not", "never mind", "nevermind",
+                "no",
+                "n",
+                "stop",
+                "cancel",
+                "don't",
+                "do not",
+                "never mind",
+                "nevermind",
             )
 
         if (noTokens.contains(normalized)) {
@@ -282,7 +299,7 @@ fun PromptInput(
                                                             if (res.isFailure) {
                                                                 replies +=
                                                                     "I couldn't process that due to an error: " +
-                                                                        (res.exceptionOrNull()?.message ?: "Unknown error") + "."
+                                                                    (res.exceptionOrNull()?.message ?: "Unknown error") + "."
                                                                 bannerIsError = true
                                                                 banner = "AI error: ${res.exceptionOrNull()?.message ?: "Unknown error"}"
                                                                 break

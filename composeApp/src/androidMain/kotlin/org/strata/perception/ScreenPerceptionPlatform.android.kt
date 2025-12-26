@@ -14,16 +14,16 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.provider.Settings
-import android.util.DisplayMetrics
 import android.util.Base64
+import android.util.DisplayMetrics
 import android.view.WindowManager
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.strata.platform.AppContext
 import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
@@ -36,11 +36,13 @@ actual object ScreenPerceptionPlatform {
         runCatching {
             val context = AppContext.context
             val activity = AppContext.activity?.get()
-            val projection = ensureProjection(context, activity)
-                ?: error("Screen capture permission denied or unavailable.")
+            val projection =
+                ensureProjection(context, activity)
+                    ?: error("Screen capture permission denied or unavailable.")
 
-            val bitmap = captureBitmap(context, projection)
-                ?: error("Failed to capture screen.")
+            val bitmap =
+                captureBitmap(context, projection)
+                    ?: error("Failed to capture screen.")
 
             val screenWidth = bitmap.width
             val screenHeight = bitmap.height
@@ -177,14 +179,14 @@ actual object ScreenPerceptionPlatform {
         return blocks
     }
 
-    private fun canDrawOverlays(context: Context): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
+    private fun canDrawOverlays(context: Context): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
 
     private fun requestOverlayPermission(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        val intent =
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
         context.startActivity(intent)
     }
 

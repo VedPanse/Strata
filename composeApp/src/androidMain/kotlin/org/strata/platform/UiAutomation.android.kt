@@ -18,8 +18,7 @@ actual object UiAutomation {
     actual suspend fun moveCursor(
         x: Int,
         y: Int,
-    ): Result<Unit> =
-        Result.success(Unit)
+    ): Result<Unit> = Result.success(Unit)
 
     actual suspend fun click(
         x: Int,
@@ -38,15 +37,13 @@ actual object UiAutomation {
         x: Int,
         y: Int,
         button: String?,
-    ): Result<Unit> =
-        Result.failure(UnsupportedOperationException("Mouse down is not supported on Android."))
+    ): Result<Unit> = Result.failure(UnsupportedOperationException("Mouse down is not supported on Android."))
 
     actual suspend fun mouseUp(
         x: Int,
         y: Int,
         button: String?,
-    ): Result<Unit> =
-        Result.failure(UnsupportedOperationException("Mouse up is not supported on Android."))
+    ): Result<Unit> = Result.failure(UnsupportedOperationException("Mouse up is not supported on Android."))
 
     actual suspend fun drag(
         startX: Int,
@@ -58,10 +55,11 @@ actual object UiAutomation {
     ): Result<Unit> =
         runCatching {
             val svc = service() ?: error("Accessibility service not available.")
-            val path = Path().apply {
-                moveTo(startX.toFloat(), startY.toFloat())
-                lineTo(endX.toFloat(), endY.toFloat())
-            }
+            val path =
+                Path().apply {
+                    moveTo(startX.toFloat(), startY.toFloat())
+                    lineTo(endX.toFloat(), endY.toFloat())
+                }
             val duration = (durationMs ?: 350).coerceIn(120, 1_200)
             val gesture =
                 GestureDescription.Builder()
@@ -94,9 +92,10 @@ actual object UiAutomation {
                 root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                     ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
                     ?: error("No focused input field.")
-            val args = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-            }
+            val args =
+                Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                }
             val success = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
             if (!success) error("Failed to set text in focused input.")
         }
@@ -114,10 +113,11 @@ actual object UiAutomation {
             val startY = height * 0.6f
             val endX = (startX - dx).coerceIn(0f, width.toFloat())
             val endY = (startY - dy).coerceIn(0f, height.toFloat())
-            val path = Path().apply {
-                moveTo(startX, startY)
-                lineTo(endX, endY)
-            }
+            val path =
+                Path().apply {
+                    moveTo(startX, startY)
+                    lineTo(endX, endY)
+                }
             val gesture =
                 GestureDescription.Builder()
                     .addStroke(GestureDescription.StrokeDescription(path, 0, 250))
@@ -126,9 +126,7 @@ actual object UiAutomation {
             if (!dispatched) error("Failed to dispatch scroll gesture.")
         }
 
-    actual suspend fun pressKey(key: String): Result<Unit> =
-        Result.failure(UnsupportedOperationException("Key presses are not supported on Android."))
+    actual suspend fun pressKey(key: String): Result<Unit> = Result.failure(UnsupportedOperationException("Key presses are not supported on Android."))
 
-    actual suspend fun keyCombo(keys: List<String>): Result<Unit> =
-        Result.failure(UnsupportedOperationException("Key combos are not supported on Android."))
+    actual suspend fun keyCombo(keys: List<String>): Result<Unit> = Result.failure(UnsupportedOperationException("Key combos are not supported on Android."))
 }

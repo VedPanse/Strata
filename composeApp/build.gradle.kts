@@ -42,6 +42,7 @@ kotlin {
             implementation(libs.sqldelight.androidDriver)
             implementation("androidx.lifecycle:lifecycle-service:2.7.0")
             implementation("com.google.mlkit:text-recognition:16.0.0")
+            implementation("com.google.android.gms:play-services-auth:20.7.0")
         }
         commonMain.dependencies {
             implementation(compose.runtime)

@@ -71,7 +71,9 @@ object ScreenPerceptionStore {
 
 object ScreenPerceptionStreamState {
     @Volatile var lastDigest: String? = null
+
     @Volatile var lastVisionAtMillis: Long? = null
+
     @Volatile var lastVisionSummary: String? = null
 }
 

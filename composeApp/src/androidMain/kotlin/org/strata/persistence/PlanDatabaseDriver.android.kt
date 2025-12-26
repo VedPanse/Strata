@@ -4,8 +4,8 @@
  */
 package org.strata.persistence
 
-import app.cash.sqldelight.android.AndroidSqliteDriver
 import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import org.strata.platform.AppContext
 
 actual object PlanDatabaseDriver {
